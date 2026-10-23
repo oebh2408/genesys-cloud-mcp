@@ -185,3 +185,18 @@ export function avgSeconds(s: Stat): number | null {
 }
 
 export const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/** All entities of a listing that pages with cursors: each page has a nextUri with an `after` (or `cursor`) parameter. */
+export async function cursorPages<T>(client: PlatformClient, path: string, query: Record<string, string>, maxPages = 20): Promise<{ items: T[]; truncated: boolean }> {
+  const items: T[] = [];
+  let after: string | undefined;
+  for (let n = 0; n < maxPages; n++) {
+    const page = await client.request<{ entities?: T[]; nextUri?: string }>('GET', path, { query: { ...query, pageSize: 100, ...(after ? { after } : {}) } });
+    items.push(...(page.entities ?? []));
+    if (!page.nextUri) return { items, truncated: false };
+    const params = new URL(page.nextUri, 'https://api.invalid').searchParams;
+    after = params.get('after') ?? params.get('cursor') ?? undefined;
+    if (!after) return { items, truncated: false };
+  }
+  return { items, truncated: true };
+}

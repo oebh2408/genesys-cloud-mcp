@@ -33,6 +33,7 @@ const READ_ONLY_POST = [
   /^\/api\/v2\/analytics\/surveys\/aggregates\/query$/,
   /^\/api\/v2\/workforcemanagement\/managementunits\/[^/]+\/agentschedules\/search$/,
   /^\/api\/v2\/users\/search$/,
+  /^\/api\/v2\/audits\/query\/realtime$/,
 ];
 
 /**

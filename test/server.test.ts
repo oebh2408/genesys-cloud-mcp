@@ -49,10 +49,17 @@ describe('server', () => {
       'get_staffing',
       'get_callbacks',
       'get_campaigns',
+      'get_channel_mix',
+      'get_bot_performance',
+      'find_agents',
+      'get_routing_overview',
+      'list_teams',
+      'get_team_performance',
+      'get_recent_changes',
     ]);
     for (const t of tools) expect(t.annotations?.readOnlyHint).toBe(true);
     const { prompts } = await client.listPrompts();
-    expect(prompts.map((p) => p.name)).toEqual(['queue_health_report', 'daily_summary', 'agent_review', 'abandon_investigation']);
+    expect(prompts.map((p) => p.name)).toEqual(['queue_health_report', 'daily_summary', 'agent_review', 'abandon_investigation', 'change_review']);
     expect(client.getInstructions()).toContain('fictional demo contact center');
   });
 
@@ -201,7 +208,7 @@ describe('server', () => {
     expect(main.transferredOut).toBe(perf.queues.reduce((n: number, q: { offered: number }) => n + q.offered, 0) - requested);
     expect(main.entered).toBe(main.transferredOut + main.endedInFlow);
     expect(main.outcomesSucceeded).toBeGreaterThan(0);
-    const hourly = await call('get_flow_performance', { flows: ['chat bot'], interval: 'yesterday', granularity: 'PT1H' });
+    const hourly = await call('get_flow_performance', { flows: ['messaging bot'], interval: 'yesterday', granularity: 'PT1H' });
     expect(hourly.flows[0].series.reduce((n: number, b: { entered: number }) => n + b.entered, 0)).toBe(hourly.flows[0].entered);
   });
 
@@ -281,6 +288,64 @@ describe('server', () => {
     expect(upgrade.inInterval.attempted).toBeGreaterThanOrEqual(upgrade.inInterval.connected);
     expect(upgrade.inInterval.wrapUps.map((w: { wrapUp: string }) => w.wrapUp)).toContain('Sale completed');
     expect(camps.campaigns.find((c: { campaign: string }) => c.campaign === 'Payment reminders').progress.percent).toBe(100);
+  });
+
+  it('channels add up to the queues', async () => {
+    const mix = await call('get_channel_mix', { interval: 'yesterday' });
+    const perf = await call('get_queue_performance', { interval: 'yesterday' });
+    const inbound = mix.channels.filter((c: { direction: string }) => c.direction === 'inbound');
+    expect(inbound.reduce((n: number, c: { interactions: number }) => n + c.interactions, 0)).toBe(perf.queues.reduce((n: number, q: { offered: number }) => n + q.offered, 0));
+    const chat = perf.queues.find((q: { queue: string }) => q.queue === 'Chat Support');
+    const messaging = inbound.filter((c: { channel: string }) => ['Web messaging', 'WhatsApp', 'Facebook Messenger'].includes(c.channel));
+    expect(messaging).toHaveLength(3);
+    expect(messaging.reduce((n: number, c: { interactions: number }) => n + c.interactions, 0)).toBe(chat.offered);
+    expect(Math.round(mix.channels.reduce((n: number, c: { sharePercent: number }) => n + c.sharePercent, 0))).toBe(100);
+  });
+
+  it('bot sessions, intents and masked messages', async () => {
+    const res = await call('get_bot_performance', { interval: 'yesterday' });
+    const bot = res.bots[0];
+    const flows = await call('get_flow_performance', { flows: ['Messaging Bot'], interval: 'yesterday' });
+    expect(bot.bot).toBe('Messaging Bot');
+    expect(bot.sessions).toBe(flows.flows[0].entered);
+    expect(bot.endedInBot + bot.sentToAgent).toBe(bot.sessions);
+    expect(bot.intents[0].sessions).toBeGreaterThanOrEqual(bot.intents.at(-1).sessions);
+    expect(bot.intents.find((i: { intent: string }) => i.intent === 'Talk to an agent').askedForAgentPercent).toBe(100);
+    const texts = bot.notUnderstood.map((m: { message: string }) => m.message).join(' ');
+    expect(texts).not.toMatch(/ana\.ruiz@|301 2297/);
+  });
+
+  it('finds agents by language and shows the routing setup', async () => {
+    const spanish = await call('find_agents', { language: 'spanish' });
+    expect(spanish.agents.map((a: { name: string }) => a.name).sort()).toEqual(['Daniel Ruiz', 'Felipe Rojas', 'Rosa Herrera', 'Xavier Mendez']);
+    expect(spanish.agents[0].availableNow || !spanish.availableNow).toBe(true);
+    const billing = await call('find_agents', { skill: 'billing', queue: 'Billing', minProficiency: 4 });
+    for (const a of billing.agents) expect(a.skillProficiency).toBeGreaterThanOrEqual(4);
+    const overview = await call('get_routing_overview', { queues: ['Billing', 'Chat Support'] });
+    expect(overview.queues.map((q: { queue: string; media: string }) => `${q.queue}:${q.media}`)).toEqual(['Billing:call', 'Chat Support:message']);
+    expect(overview.queues[0].skills.find((s: { name: string }) => s.name === 'Billing').members).toBe(5);
+  });
+
+  it('teams cover every agent and their numbers add up', async () => {
+    const teams = await call('list_teams');
+    expect(teams.teams.reduce((n: number, t: { members: number }) => n + t.members, 0)).toBe(25);
+    expect(teams.teams.find((t: { team: string }) => t.team === 'Spanish Desk')).toMatchObject({ supervisor: 'Andrea Molina', division: 'Customer Care', members: 4 });
+    const byTeam = await call('get_team_performance', { interval: 'yesterday' });
+    const perf = await call('get_agent_performance', { interval: 'yesterday', limit: 50 });
+    const handled = perf.agents.reduce((n: number, a: { handled: number }) => n + a.handled, 0);
+    expect(byTeam.rows.reduce((n: number, r: { handled: number }) => n + r.handled, 0)).toBe(handled);
+    const byDivision = await call('get_team_performance', { interval: 'yesterday', groupBy: 'division' });
+    expect(byDivision.rows.map((r: { division: string }) => r.division).sort()).toEqual(['Customer Care', 'Sales']);
+  });
+
+  it('recent changes come from the audit log, newest first', async () => {
+    const all = await call('get_recent_changes');
+    const dates = all.changes.map((c: { at: string }) => Date.parse(c.at));
+    expect(dates).toEqual([...dates].sort((a, b) => b - a));
+    const billing = await call('get_recent_changes', { area: 'queues', entity: 'billing' });
+    expect(billing.changes[0]).toMatchObject({ changedBy: 'Marco Silva', type: 'Queue', name: 'Billing' });
+    expect(billing.changes.map((c: { changes: { property: string }[] }) => c.changes[0]!.property)).toContain('mediaSettings.call.alertingTimeoutSeconds');
+    await expect(call('get_recent_changes', { interval: 'last 30d' })).rejects.toThrow('14 days');
   });
 
   it('reports unknown names as tool errors', async () => {

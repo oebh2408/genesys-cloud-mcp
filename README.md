@@ -8,7 +8,7 @@
 
 Most questions a supervisor asks about a contact center are simple to say and slow to answer: which queue is losing calls this morning, who handled the most chats yesterday, what happened to a specific call. In Genesys Cloud the answer is usually spread over a few analytics views and filters. An AI assistant with access to the Platform API could answer them directly, but giving it a token that can also change routing, or read every customer's phone number, is not something most teams want.
 
-This is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives the assistant 24 tools over queues, agents, conversations, IVR flows, opening hours, quality evaluations, surveys, workforce management schedules, callbacks and outbound campaigns, and nothing that writes. Every request goes through a read-only check before it is sent, and customer names, numbers and email addresses are masked by default. It includes a simulated contact center, so it can be tried in any MCP client without a Genesys Cloud account.
+This is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives the assistant 31 tools over queues, agents, conversations, channels, IVR and bot flows, opening hours, quality evaluations, surveys, workforce management schedules, callbacks, outbound campaigns, teams, routing setup and the audit log, and nothing that writes. Every request goes through a read-only check before it is sent, and customer names, numbers and email addresses are masked by default. It includes a simulated contact center, so it can be tried in any MCP client without a Genesys Cloud account.
 
 <img src="docs/demo.svg" alt="Terminal demo: four read-only tool calls against the demo contact center show live queue status, today's queue performance, the abandoned calls in Billing with customer data masked, and how the Billing agents spent their time" width="100%">
 
@@ -33,6 +33,11 @@ This is a [Model Context Protocol](https://modelcontextprotocol.io) server that 
 - What did the detractors say about Support this week?
 - How many callbacks are waiting, and how long did customers wait to be called back today?
 - How far along is the upgrade campaign, and what is its connect rate?
+- How much of today's volume came in on WhatsApp, and how is its service level compared with voice?
+- What do customers ask the bot that it does not understand?
+- Who can take Spanish calls right now?
+- Which team has the best quality score and NPS this week?
+- Did anyone change the Billing queue or the IVR in the last few days?
 
 ## Tools
 
@@ -68,7 +73,7 @@ Flows and opening hours
 
 | Tool | What it returns | API used |
 | --- | --- | --- |
-| `get_flow_performance` | Per inbound flow (IVR, chat bot): entered, transferred to a queue, ended in the flow, time in the flow and flow outcomes; optional time buckets | `GET /api/v2/flows`, `POST /api/v2/analytics/flows/aggregates/query` |
+| `get_flow_performance` | Per inbound flow (IVR, bot): entered, transferred to a queue, ended in the flow, time in the flow and flow outcomes; optional time buckets | `GET /api/v2/flows`, `POST /api/v2/analytics/flows/aggregates/query` |
 | `get_schedule_status` | Whether each schedule group is open, closed or on a holiday now or at a given time, which schedule decides it, the next change and the holidays in the next 60 days | `GET /api/v2/architect/schedulegroups`, `GET /api/v2/architect/schedules` |
 
 Quality and surveys
@@ -95,14 +100,42 @@ Callbacks and outbound
 | `get_callbacks` | Callbacks waiting now per queue with the oldest, and callbacks requested and completed in an interval with the time to call back | Queue observations and conversation aggregates for `mediaType` callback |
 | `get_campaigns` | Outbound campaigns: status, dialing mode, queue, contact list progress, idle agents, and attempts, connects, connect rate and wrap-up codes in an interval | `GET /api/v2/outbound/campaigns`, `.../{id}/stats`, `.../{id}/progress`, conversation aggregates |
 
+Channels and bots
+
+| Tool | What it returns | API used |
+| --- | --- | --- |
+| `get_channel_mix` | Interactions per channel (voice in and out, callback, web messaging, WhatsApp, Facebook and other messaging) with share, answered, abandon rate, service level, speed of answer and handle time | `POST /api/v2/analytics/conversations/aggregates/query` grouped by media and message type |
+| `get_bot_performance` | Per bot flow: sessions, ended in the bot, resolved, sent to an agent, intents with how often customers asked for an agent, the not-understood rate and the messages the bot did not understand most often (masked) | Flow aggregates, `GET /api/v2/analytics/botflows/{id}/reportingturns` |
+
+Routing setup
+
+| Tool | What it returns | API used |
+| --- | --- | --- |
+| `find_agents` | Agents with a skill or language, optionally in one queue and above a proficiency, with their current status, available agents first | `GET /api/v2/users` with skills and languages, queue members |
+| `get_routing_overview` | Several queues side by side: service level target, alerting timeout, after-call work, skill evaluation, members joined and on queue now, members per skill and language, and setup problems | `GET /api/v2/routing/queues/{id}`, `.../members`, `.../wrapupcodes` |
+
+Teams
+
+| Tool | What it returns | API used |
+| --- | --- | --- |
+| `list_teams` | Teams with division, supervisor, members and members on queue now | `GET /api/v2/teams`, `.../{id}/members`, `GET /api/v2/users` |
+| `get_team_performance` | Per team, supervisor or division: members, handled, average handle time, on-queue share, occupancy, quality score and NPS | Conversation, user, evaluation and survey aggregates by user |
+
+Change history
+
+| Tool | What it returns | API used |
+| --- | --- | --- |
+| `get_recent_changes` | Who changed queues, flows, schedules, users, wrap-up codes or skills in the last 14 days, newest first, with old and new values | `POST /api/v2/audits/query/realtime` |
+
 Prompts combine the tools for common tasks:
 
 | Prompt | What it asks for |
 | --- | --- |
 | `queue_health_report` | Live status and today's hourly trend, with the queues to act on |
-| `daily_summary` | A day compared with the same day a week earlier: volumes, service level, abandons, the IVR, callbacks, NPS and wrap-up codes |
+| `daily_summary` | A day compared with the same day a week earlier: volumes, service level, abandons, channels, the IVR and the bot, callbacks, NPS and wrap-up codes |
 | `agent_review` | Notes for a one-to-one: volume, handle time against the team, time on queue, quality scores, survey comments and wrap-up codes |
-| `abandon_investigation` | When a queue lost calls, how long callers waited, scheduled against actual agents, callbacks and what the IVR did |
+| `abandon_investigation` | When a queue lost calls, how long callers waited, scheduled against actual agents, callbacks, what the IVR did and recent configuration changes |
+| `change_review` | The configuration changes of the last days and whether the queues and flows they touched behaved differently afterwards |
 
 Queues, agents and flows can be given by name; partial names work (`"chat"` finds `Chat Support`). Intervals accept `today`, `yesterday`, `this_week`, `last 30m`, `last 4h`, `last 7d` or an ISO-8601 interval. Calendar words use `GENESYS_TIMEZONE`.
 
@@ -110,9 +143,9 @@ Results are JSON with names instead of ids, durations in seconds (or minutes whe
 
 ## Try it with the demo contact center
 
-The demo is a fictional center with six queues (voice and chat), 25 agents and three entry flows. Calls arrive on a daily curve, go through the IVR or the chat bot, and are routed to the first free agent who is on shift and not on lunch or a break, so waits, abandons and service level come out of the load and staffing. Some callers finish in self-service or hang up in the menus, and outside opening hours they hear the closed message. In three queues, callers about to hang up can ask for a callback. The opening hours have weekday and weekend schedules, a closed slot for a team meeting and the local holidays.
+The demo is a fictional center with six queues (voice and messaging), 25 agents in five teams and three entry flows. Calls and messages arrive on a daily curve, go through the IVR or the messaging bot, and are routed to the first free agent who is on shift and not on lunch or a break, so waits, abandons and service level come out of the load and staffing. Some callers finish in self-service or hang up in the menus, and outside opening hours they hear the closed message. In three queues, callers about to hang up can ask for a callback. The opening hours have weekday and weekend schedules, a closed slot for a team meeting and the local holidays.
 
-Agents work published shifts with two breaks and lunch, and do not follow them exactly: some log in late, some breaks run over, and a call that runs into a break delays it. Two supervisors evaluate about one in 25 interactions, about 30% of customers get a survey and a third of them answer, some with a comment. Sales and Retention run outbound campaigns. History covers the last five weeks and live status changes as the day goes on.
+Agents work published shifts with two breaks and lunch, and do not follow them exactly: some log in late, some breaks run over, and a call that runs into a break delays it. Two supervisors evaluate about one in 25 interactions, about 30% of customers get a survey and a third of them answer, some with a comment. Sales and Retention run outbound campaigns. Messages come in on web messaging, WhatsApp and Facebook, the bot recognises a handful of intents and misses some messages, and the audit log has two weeks of configuration changes. History covers the last five weeks and live status changes as the day goes on.
 
 In Claude Desktop, add this to `claude_desktop_config.json`:
 
@@ -189,6 +222,9 @@ This is what the model receives from `get_queue_performance` for the demo Billin
    - `analytics:surveyAggregate:view`, `quality:survey:view`
    - `wfm:realtimeAdherence:view`, `wfm:schedule:view`, `wfm:agent:view`, `wfm:activityCode:view`
    - `outbound:campaign:view`
+   - `analytics:botFlowReportingTurn:view` for bot turns
+   - `directory:team:view`, `authorization:division:view`
+   - `audits:audit:view`
    - permission to view users, their presence and routing status
 
    Permission names change from time to time; check them in Admin > Roles / Permissions. A 403 from a tool tells you which request was refused.
@@ -225,7 +261,7 @@ This is what the model receives from `get_queue_performance` for the demo Billin
 
 | Concern | Handling |
 | --- | --- |
-| The assistant changes something in the org | Every request goes through one check that allows `GET`, the analytics query endpoints and the schedule search, and refuses anything else before it is sent. The OAuth role, with view permissions only, is the second layer. |
+| The assistant changes something in the org | Every request goes through one check that allows `GET`, the analytics query endpoints, the schedule search and the audit query, and refuses anything else before it is sent. The OAuth role, with view permissions only, is the second layer. |
 | Customer data reaches the model | Masked by default: phone numbers keep the last four digits (`+1•••4567`), emails keep the first letter and the domain, customer names become initials. Agent names are shown. `GENESYS_REDACT=false` turns it off. |
 | Credentials leak | They are read from the environment and are not logged or returned in tool results. |
 | Rate limits | 429 and 5xx responses are retried with `Retry-After` or exponential backoff, up to three times. An expired token is refreshed once. |
@@ -257,6 +293,10 @@ await server.connect(new StdioServerTransport());
 - Schedule searches that Genesys Cloud answers asynchronously (large management units or long periods) are not supported yet; the tool says so instead of guessing.
 - `list_survey_responses` reads the newest 100 conversations with an answered survey and then each survey for its comment, so it is meant for recent samples, not exports.
 - The quality, survey, workforce management and outbound tools follow the Platform API documentation and are tested against the demo org, which implements the same requests. Field names in a real org can differ in details; please open an issue if one does.
+- `get_bot_performance` reads up to 5,000 bot turns per bot; for long intervals the intent counts are a sample and the result says it was truncated.
+- `get_recent_changes` uses the real-time audit query, which covers the last 14 days. Older changes need the asynchronous audit query, which is not supported.
+- `get_team_performance` groups by supervisor using the manager set on each user, so it is only as good as that field.
+- The channel, bot, routing, team and audit tools are tested against the demo org only, like the quality and workforce tools above.
 - `endedInFlow` in `get_flow_performance` does not separate self-service from callers who hung up; flow outcomes do, if the flows set them.
 
 ## Design decisions

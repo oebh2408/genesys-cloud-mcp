@@ -32,7 +32,7 @@ export function createServer(options: ServerOptions): McpServer {
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions: [
-        'Read-only access to a Genesys Cloud contact center: queues, agents, conversations, IVR flows, opening hours, quality evaluations, surveys, workforce management schedules and outbound campaigns.',
+        'Read-only access to a Genesys Cloud contact center: queues, agents, conversations, channels, IVR and bot flows, opening hours, quality evaluations, surveys, workforce management schedules, outbound campaigns, teams, routing setup and the audit log of configuration changes.',
         `Relative intervals such as "today" use the ${ctx.timeZone} time zone.`,
         'Times in results are ISO-8601 UTC. Durations are in seconds unless the field name says minutes. Service level uses a 20 second target.',
         ctx.redact ? 'Customer phone numbers, emails and names are masked.' : '',
@@ -97,8 +97,8 @@ export function createServer(options: ServerOptions): McpServer {
     },
     ({ day }) => prompt(
       `Write a summary of ${day ?? 'yesterday'} for the operations team.`,
-      `Use compare_queue_performance with interval "${day ?? 'yesterday'}" for volumes, service level and abandons against the same day a week earlier, get_flow_performance for the IVR and chat bot, get_wrapup_summary for how interactions were closed, get_callbacks for callbacks, and get_survey_summary for NPS.`,
-      'Start with three lines: total offered, overall service level and abandon rate, each with the change. Then one line per queue that missed 80% service level or 5% abandon rate, and one line on the IVR (share that ended in the flow and outcomes that failed).',
+      `Use compare_queue_performance with interval "${day ?? 'yesterday'}" for volumes, service level and abandons against the same day a week earlier, get_channel_mix for the split by channel, get_flow_performance for the IVR, get_bot_performance for the messaging bot, get_wrapup_summary for how interactions were closed, get_callbacks for callbacks, and get_survey_summary for NPS.`,
+      'Start with three lines: total offered, overall service level and abandon rate, each with the change. Then one line per queue that missed 80% service level or 5% abandon rate, one line on the channels, and one line on the IVR and the bot (share that ended in the flow, share sent to an agent).',
       'Finish with NPS and the response rate, and the two wrap-up codes that changed the most if they are notable. Plain numbers, no more than 250 words.',
     ),
   );
@@ -128,8 +128,23 @@ export function createServer(options: ServerOptions): McpServer {
     ({ queue, interval }) => prompt(
       `Investigate the abandoned interactions in ${queue} for ${interval ?? 'today'}.`,
       `Use get_queue_performance with granularity PT30M to find the half hours with the most abandons, search_conversations with outcome "abandoned" to see how long callers waited before hanging up, get_staffing to compare scheduled and actual agents in those half hours, get_callbacks to see whether callers took a callback instead, and get_flow_performance for the entry flow.`,
-      'Check get_schedule_status if the abandons are near opening or closing time. Say whether the cause looks like volume, a schedule with too few agents, agents not following the schedule, long handle times, or callers giving up early, and back it with the numbers.',
+      'Check get_recent_changes for the queue and its entry flow over the last 7 days, and get_schedule_status if the abandons are near opening or closing time. Say whether the cause looks like volume, a schedule with too few agents, agents not following the schedule, long handle times, or callers giving up early, and back it with the numbers.',
       'Keep it under 250 words.',
+    ),
+  );
+
+  server.registerPrompt(
+    'change_review',
+    {
+      title: 'Change review',
+      description: 'List the configuration changes of the last days and check whether the queues they touched behaved differently afterwards.',
+      argsSchema: { interval: z.string().optional().describe('last 7d (default), last 24h, yesterday...') },
+    },
+    ({ interval }) => prompt(
+      `Review the configuration changes of ${interval ?? 'the last 7 days'}.`,
+      `Use get_recent_changes with interval "${interval ?? 'last 7d'}". Group the changes by object and say who made them and when, in local time.`,
+      'For each queue or flow that changed, compare the day before and the day after the change with get_queue_performance or get_flow_performance, and say whether service level, abandons, handle time or the share that ended in the flow moved by more than a few points.',
+      'Do not claim a change caused a difference; say what moved and when. Keep it under 250 words.',
     ),
   );
 

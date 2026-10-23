@@ -24,6 +24,11 @@ export class DemoPlatformClient implements PlatformClient {
   private readonly forms: { id: string; name: string }[];
   private readonly wfm: { managementUnitId: string; businessUnitId: string; codes: Record<ActivityCategory, string> };
   private readonly qualityDays = new Map<number, DemoEvaluation[]>();
+  /** Supervisors who manage teams; the first two also evaluate. */
+  private readonly managers: { id: string; name: string }[];
+  private readonly divisions: { id: string; name: string }[];
+  private readonly teams: DemoTeam[];
+  private readonly turnDays = new Map<number, DemoTurn[]>();
 
   constructor(private readonly now: () => Date = () => new Date()) {
     const rng = random(7);
@@ -55,12 +60,23 @@ export class DemoPlatformClient implements PlatformClient {
     const extra = [...new Set(Object.values(CAMPAIGN_WRAPUPS).flat())].filter((name) => !WRAPUPS.includes(name));
     this.wrapups.push(...extra.map((name) => ({ id: uuid(rng), name })));
     this.campaigns = CAMPAIGNS.map((c) => ({ ...c, id: uuid(rng), contactListId: uuid(rng), queueId: c.queue ? this.queues.find((q) => q.name === c.queue)!.id : undefined }));
-    this.forms = ['Voice quality v3', 'Chat quality v2'].map((name) => ({ id: uuid(rng), name }));
+    this.forms = ['Voice quality v3', 'Messaging quality v2'].map((name) => ({ id: uuid(rng), name }));
     this.wfm = {
       managementUnitId: uuid(rng),
       businessUnitId: uuid(rng),
       codes: Object.fromEntries((['OnQueueWork', 'Break', 'Meal', 'Meeting', 'Training'] as ActivityCategory[]).map((c) => [c, uuid(rng)])) as Record<ActivityCategory, string>,
     };
+    // Created last, so the ids generated before them stay the same.
+    this.managers = [...this.supervisors, { id: uuid(rng), name: 'Andrea Molina' }];
+    this.divisions = ['Customer Care', 'Sales'].map((name) => ({ id: uuid(rng), name }));
+    this.teams = TEAMS.map((t) => ({
+      id: uuid(rng),
+      name: t.name,
+      description: t.description,
+      divisionId: this.divisions.find((d) => d.name === t.division)!.id,
+      managerId: this.managers.find((x) => x.name === t.manager)!.id,
+      memberIds: t.members.map((n) => this.agents.find((a) => a.name === n)!.id),
+    }));
   }
 
   async request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
@@ -82,8 +98,8 @@ export class DemoPlatformClient implements PlatformClient {
       return page(this.queues.filter((x) => agent.queueIds.includes(x.id)).map((x) => ({ id: x.id, name: x.name, joined: true })), q) as T;
     }
     if (method === 'GET' && (m = /^\/api\/v2\/users\/([^/]+)$/.exec(path))) {
-      const supervisor = this.supervisors.find((x) => x.id === m![1]);
-      if (supervisor) return { ...supervisor, title: 'Team Supervisor', department: 'Quality', state: 'active' } as T;
+      const manager = this.managers.find((x) => x.id === m![1]);
+      if (manager) return { ...manager, title: 'Team Supervisor', department: 'Operations', state: 'active', division: this.divisionRef(this.divisions[0]!.id) } as T;
       return this.userEntity(this.agent(m[1]!), String(q.expand ?? '')) as T;
     }
     if (method === 'GET' && path === '/api/v2/quality/evaluations/query') return this.evaluationsQuery(q) as T;
@@ -108,11 +124,20 @@ export class DemoPlatformClient implements PlatformClient {
     }
     if (method === 'POST' && /^\/api\/v2\/workforcemanagement\/managementunits\/[^/]+\/agentschedules\/search$/.test(path)) return this.agentSchedules(body) as T;
     if (method === 'GET' && path === '/api/v2/workforcemanagement/adherence') return this.adherence(q) as T;
+    if (method === 'GET' && path === '/api/v2/teams') return cursorPage(this.teams.map((t) => this.teamEntity(t)), q, path) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/teams\/([^/]+)\/members$/.exec(path))) {
+      const team = this.teams.find((t) => t.id === m![1]);
+      if (!team) throw new PlatformError(`Team ${m[1]} not found.`, 404);
+      return cursorPage(team.memberIds.map((id) => ({ id, name: this.agent(id).name })), q, path) as T;
+    }
+    if (method === 'GET' && path === '/api/v2/authorization/divisions') return page(this.divisions, q) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/analytics\/botflows\/([^/]+)\/reportingturns$/.exec(path))) return this.reportingTurns(m[1]!, q, path) as T;
+    if (path === '/api/v2/audits/query/realtime') return this.audits(body) as T;
     if (method === 'GET' && path === '/api/v2/routing/wrapupcodes') return page(this.wrapups, q) as T;
     if (method === 'GET' && path === '/api/v2/routing/skills') return page(this.skills, q) as T;
     if (method === 'GET' && path === '/api/v2/flows') {
       const types = typeof q.type === 'string' ? q.type.split(',') : undefined;
-      return page(this.flows.filter((f) => !types || types.includes(f.type)).map((f) => ({ id: f.id, name: f.name, type: f.type, description: f.description, publishedVersion: { id: '12' } })), q) as T;
+      return page(this.flows.filter((f) => !types || types.includes(f.type)).map((f) => ({ id: f.id, name: f.name, type: f.type, description: f.description, publishedVersion: { id: String(f.version) } })), q) as T;
     }
     if (method === 'GET' && path === '/api/v2/architect/schedulegroups') {
       const g = this.scheduleGroup;
@@ -189,7 +214,7 @@ export class DemoPlatformClient implements PlatformClient {
 
   private listUsers(q: RequestOptions['query'] & object) {
     return page(
-      this.agents.map((a) => this.userEntity(a)),
+      this.agents.map((a) => this.userEntity(a, String(q.expand ?? 'presence,routingStatus'))),
       q,
     );
   }
@@ -207,9 +232,23 @@ export class DemoPlatformClient implements PlatformClient {
       state: 'active',
       presence: { presenceDefinition: { systemPresence: s.presence } },
       routingStatus: { status: s.routing },
+      division: this.divisionRef(this.teamOf(a).divisionId),
+      manager: { id: this.teamOf(a).managerId },
       ...(want.has('skills') ? { skills: skills.map((k) => ({ id: this.skills.find((x) => x.name === k.name)!.id, name: k.name, proficiency: k.proficiency, state: 'active' })) } : {}),
       ...(want.has('languages') ? { languages: this.agentLanguages(a) } : {}),
     };
+  }
+
+  private teamOf(a: DemoAgent) {
+    return this.teams.find((t) => t.memberIds.includes(a.id))!;
+  }
+
+  private divisionRef(id: string) {
+    return { id, name: this.divisions.find((d) => d.id === id)!.name };
+  }
+
+  private teamEntity(t: DemoTeam) {
+    return { id: t.id, name: t.name, description: t.description, division: this.divisionRef(t.divisionId), memberCount: t.memberIds.length, dateModified: '2026-08-03T14:00:00.000Z' };
   }
 
   /** Skills follow the queues an agent works, with a fixed proficiency per agent and skill. */
@@ -425,7 +464,7 @@ export class DemoPlatformClient implements PlatformClient {
     const granularity = body.granularity ? durationMs(String(body.granularity)) : undefined;
     const sessions = this.flowSessionsBetween(interval.start, Math.min(interval.end, now)).filter((x) => {
       const flow = this.flows.find((f) => f.id === x.flowId)!;
-      return matches(body.filter, { flowId: flow.id, flowType: flow.type, mediaType: flow.type === 'inboundchat' ? 'chat' : 'voice' });
+      return matches(body.filter, { flowId: flow.id, flowType: flow.type, mediaType: flow.type === 'digitalbot' ? 'message' : 'voice' });
     });
     const groups = new Map<string, { group: Record<string, string>; items: DemoFlowSession[] }>();
     for (const x of sessions) {
@@ -527,6 +566,115 @@ export class DemoPlatformClient implements PlatformClient {
     return out;
   }
 
+  // ---- bot -------------------------------------------------------------------------------
+
+  private reportingTurns(flowId: string, q: RequestOptions['query'] & object, path: string) {
+    const flow = this.flows.find((f) => f.id === flowId);
+    if (!flow || flow.type !== 'digitalbot') throw new PlatformError(`Bot flow ${flowId} not found.`, 404);
+    const interval = parseInterval(q.interval);
+    const now = this.now().getTime();
+    const nowDay = Math.floor(now / DAY);
+    const turns: DemoTurn[] = [];
+    for (let day = Math.floor(interval.start / DAY); day <= Math.floor((interval.end - 1) / DAY); day++) {
+      if (day < nowDay - HISTORY_DAYS || day > nowDay) continue;
+      for (const t of this.turnDay(day)) if (t.at >= interval.start && t.at < Math.min(interval.end, now)) turns.push(t);
+    }
+    const iso = (t: number) => new Date(t).toISOString();
+    return cursorPage(
+      turns.map((t) => ({
+        sessionId: t.sessionId,
+        conversation: { id: t.conversationId },
+        dateCreated: iso(t.at),
+        dateCompleted: iso(t.at + t.ms),
+        botPrompts: [t.prompt],
+        ...(t.userInput !== undefined ? { userInput: t.userInput } : {}),
+        askAction: { actionName: t.action, actionType: 'DigitalMenuAction' },
+        ...(t.intent ? { intent: { name: t.intent, confidence: t.confidence } } : {}),
+        askActionResult: t.result,
+      })),
+      q,
+      path,
+    );
+  }
+
+  /** Bot turns for one day, built from the bot sessions in the flow data so the counts agree. */
+  private turnDay(day: number): DemoTurn[] {
+    const cached = this.turnDays.get(day);
+    if (cached) return cached;
+    const bots = this.flows.filter((f) => f.type === 'digitalbot').map((f) => f.id);
+    const out: DemoTurn[] = [];
+    const greeting = 'Hi, I am the virtual assistant. What can I help you with?';
+    const retry = 'Sorry, I did not get that. Can you say it another way?';
+    for (const x of this.flowDay(day)) {
+      if (!bots.includes(x.flowId) || x.outcome === 'closed') continue;
+      const rng = random(hash(`turns:${x.flowId}:${x.start}`));
+      const sessionId = uuid(rng);
+      const conversationId = uuid(rng);
+      const list: Omit<DemoTurn, 'sessionId' | 'conversationId' | 'at' | 'ms'>[] = [];
+      const pickFrom = <T,>(items: T[]) => items[Math.floor(rng() * items.length)]!;
+      const misunderstood = () => list.push({ userInput: pickFrom(BOT_UNRECOGNIZED), prompt: list.length ? retry : greeting, action: 'Ask for intent', result: 'NoMatchCollection' });
+      if (x.outcome === 'hung-up') {
+        if (rng() < 0.5) list.push({ prompt: greeting, action: 'Ask for intent', result: 'NoInputCollection' });
+        else misunderstood();
+        if (rng() < 0.3) list.push({ prompt: retry, action: 'Ask for intent', result: 'NoInputCollection' });
+      } else {
+        const solved = x.outcome === 'self-service';
+        const intents = BOT_INTENTS.filter((i) => (solved ? i.selfService : !i.selfService || rng() < 0.3));
+        const intent = pickFrom(intents);
+        if (rng() < (solved ? 0.15 : 0.3)) misunderstood();
+        if (!solved && rng() < 0.1) misunderstood();
+        const asksForAgent = intent.name === 'Talk to an agent';
+        list.push({ userInput: pickFrom(intent.inputs), intent: intent.name, confidence: Math.round((0.62 + rng() * 0.37) * 100) / 100, prompt: list.length ? retry : greeting, action: 'Ask for intent', result: asksForAgent ? 'AgentRequestedByUser' : 'SuccessCollection' });
+        if (solved) list.push({ userInput: pickFrom(['no thanks', 'that is all', 'thank you']), prompt: 'Anything else I can help with?', action: 'Anything else', result: 'SuccessCollection' });
+        else if (!asksForAgent && rng() < 0.4) list.push({ userInput: pickFrom(['agent', 'I want to talk to someone', 'person']), prompt: 'Here is what I found. Did that answer your question?', action: 'Confirm answer', result: 'AgentRequestedByUser' });
+      }
+      const step = x.ms / list.length;
+      list.forEach((t, i) => out.push({ ...t, sessionId, conversationId, at: x.start + Math.round(i * step), ms: Math.round(step * 0.9) }));
+    }
+    out.sort((a, b) => a.at - b.at);
+    this.turnDays.set(day, out);
+    return out;
+  }
+
+  // ---- audit -----------------------------------------------------------------------------
+
+  private audits(body: Record<string, unknown>) {
+    const interval = parseInterval(body.interval);
+    const now = this.now().getTime();
+    const service = typeof body.serviceName === 'string' ? body.serviceName : undefined;
+    const filters = (body.filters as { property: string; value: string }[] | undefined) ?? [];
+    const types = filters.filter((f) => f.property === 'EntityType').map((f) => f.value);
+    const today = localDayOf(now);
+    const idOf = (type: string, name: string) =>
+      (type === 'Queue' ? this.queues : type === 'Flow' ? this.flows : type === 'User' ? this.agents : type === 'WrapupCode' ? this.wrapups : []).find((x) => x.name === name)?.id ??
+      uuid(random(hash(`${type}:${name}`)));
+    const entities = AUDIT_EVENTS.map((e, i) => {
+      const [hh, mm] = e.time.split(':').map(Number);
+      const at = localTime(today - e.daysAgo, hh! + mm! / 60);
+      const user = this.managers.find((x) => x.name === e.user)!;
+      return {
+        id: uuid(random(hash(`audit:${i}`))),
+        user: { id: user.id, name: user.name },
+        serviceName: e.service,
+        level: 'USER',
+        eventDate: new Date(at).toISOString(),
+        action: e.action,
+        status: 'SUCCESS',
+        entity: { id: idOf(e.entityType, e.entity), name: e.entity },
+        entityType: e.entityType,
+        application: 'Genesys Cloud',
+        propertyChanges: e.changes,
+        at,
+      };
+    })
+      .filter((e) => e.at >= interval.start && e.at < Math.min(interval.end, now))
+      .filter((e) => !service || e.serviceName === service)
+      .filter((e) => !types.length || types.includes(e.entityType))
+      .sort((a, b) => b.at - a.at)
+      .map(({ at: _at, ...rest }) => rest);
+    return page(entities, { pageSize: Number(body.pageSize ?? 25), pageNumber: Number(body.pageNumber ?? 1) });
+  }
+
   // ---- quality ---------------------------------------------------------------------------
 
   /** Evaluations of conversations from one day: about one in 25 handled interactions is scored by a supervisor. */
@@ -542,7 +690,7 @@ export class DemoPlatformClient implements PlatformClient {
         id: uuid(random(h('evid'))),
         conversation: c,
         evaluatorId: this.supervisors[h('evr') % this.supervisors.length]!.id,
-        formId: this.forms[c.mediaType === 'chat' ? 1 : 0]!.id,
+        formId: this.forms[c.mediaType === 'message' ? 1 : 0]!.id,
         releaseAt: c.endAt + (1 + (h('evd') % 3)) * DAY + 3 * 3_600_000,
         score: Math.max(40, Math.min(100, agentQuality(c.agentId) + (h('evs') % 17) - 8 - (failed ? 12 : 0))),
         criticalScore: failed ? 0 : 100,
@@ -867,6 +1015,7 @@ export class DemoPlatformClient implements PlatformClient {
       queueId: c.queueId,
       userId: c.agentId,
       mediaType: c.mediaType,
+      messageType: messageTypeOf(c),
       direction: c.direction,
       originatingDirection: c.direction,
       wrapUpCode: c.wrapupId,
@@ -883,7 +1032,8 @@ export class DemoPlatformClient implements PlatformClient {
     const ended = c.endAt <= now;
     const leftQueue = c.answeredAt ?? c.abandonedAt ?? c.flowOutAt ?? Infinity;
     const dnis = queue.mediaType === 'voice' ? `tel:${queue.number}` : queue.address;
-    const ani = queue.mediaType === 'voice' ? `tel:${c.ani}` : c.email;
+    const messageType = messageTypeOf(c);
+    const ani = queue.mediaType === 'voice' || messageType === 'whatsapp' ? `tel:${c.ani}` : c.email;
     const customerEnd = ended ? c.endAt : undefined;
 
     const participants: Record<string, unknown>[] = [
@@ -894,6 +1044,7 @@ export class DemoPlatformClient implements PlatformClient {
         sessions: [
           {
             mediaType: c.mediaType,
+            ...(messageType ? { messageType } : {}),
             direction: c.direction,
             ani,
             dnis,
@@ -1105,7 +1256,7 @@ interface DemoQueue {
   id: string;
   name: string;
   description: string;
-  mediaType: 'voice' | 'chat' | 'email';
+  mediaType: 'voice' | 'message';
   number?: string;
   address?: string;
   peakPerHour: number;
@@ -1123,7 +1274,7 @@ interface DemoQueue {
 interface DemoFlow {
   id: string;
   name: string;
-  type: 'inboundcall' | 'inboundchat';
+  type: 'inboundcall' | 'digitalbot';
   description: string;
   queues: string[];
   queueIds: string[];
@@ -1133,6 +1284,30 @@ interface DemoFlow {
   selfService: number;
   /** Share of callers who fail identification before going to a queue. */
   authFailure: number;
+  /** Published version. */
+  version: number;
+}
+
+interface DemoTeam {
+  id: string;
+  name: string;
+  description: string;
+  divisionId: string;
+  managerId: string;
+  memberIds: string[];
+}
+
+interface DemoTurn {
+  sessionId: string;
+  conversationId: string;
+  at: number;
+  ms: number;
+  intent?: string;
+  confidence?: number;
+  userInput?: string;
+  prompt: string;
+  action: string;
+  result: 'SuccessCollection' | 'NoMatchCollection' | 'NoInputCollection' | 'AgentRequestedByUser';
 }
 
 interface DemoFlowSession {
@@ -1237,7 +1412,7 @@ const QUEUES: Omit<DemoQueue, 'id'>[] = [
   { name: 'Sales', description: 'New customers and upgrades', mediaType: 'voice', number: '+18005550102', peakPerHour: 16, ahtSec: 420, patienceSec: 160, outboundShare: 0.2, weekendFactor: 0.5, wrapups: ['Information provided', 'Sale completed', 'Follow-up needed', 'Wrong department'], campaign: 'Upgrade offers' },
   { name: 'Retention', description: 'Cancellation requests', mediaType: 'voice', number: '+18005550103', peakPerHour: 8, ahtSec: 540, patienceSec: 260, outboundShare: 0.1, weekendFactor: 0.4, wrapups: ['Cancellation saved', 'Cancelled', 'Follow-up needed', 'Information provided'], campaign: 'Win-back' },
   { name: 'Spanish Support', description: 'Support in Spanish', mediaType: 'voice', number: '+18005550104', peakPerHour: 15, ahtSec: 360, patienceSec: 160, outboundShare: 0, weekendFactor: 0.5, wrapups: ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Wrong department'], callbackShare: 0.3 },
-  { name: 'Chat Support', description: 'Web chat support', mediaType: 'chat', address: 'web-chat', peakPerHour: 22, ahtSec: 560, patienceSec: 240, outboundShare: 0, weekendFactor: 0.6, wrapups: ['Resolved', 'Information provided', 'Escalated', 'Follow-up needed'] },
+  { name: 'Chat Support', description: 'Web messaging, WhatsApp and Facebook Messenger', mediaType: 'message', address: 'web-messaging', peakPerHour: 22, ahtSec: 560, patienceSec: 240, outboundShare: 0, weekendFactor: 0.6, wrapups: ['Resolved', 'Information provided', 'Escalated', 'Follow-up needed'] },
 ];
 
 const AGENTS: [string, string[], number][] = [
@@ -1279,9 +1454,9 @@ const QUEUE_SKILLS: Record<string, string[]> = {
 };
 
 const FLOWS: Omit<DemoFlow, 'id' | 'queueIds'>[] = [
-  { name: 'Main IVR', type: 'inboundcall', description: 'Main number: identification, self-service balance and payments, menu to queues', queues: ['Support', 'Billing', 'Sales', 'Retention'], menuSec: 55, selfService: 0.18, authFailure: 0.12 },
-  { name: 'Spanish IVR', type: 'inboundcall', description: 'Spanish line', queues: ['Spanish Support'], menuSec: 40, selfService: 0.08, authFailure: 0.1 },
-  { name: 'Web Chat Bot', type: 'inboundchat', description: 'Answers common questions before handing over to an agent', queues: ['Chat Support'], menuSec: 70, selfService: 0.3, authFailure: 0 },
+  { name: 'Main IVR', type: 'inboundcall', description: 'Main number: identification, self-service balance and payments, menu to queues', queues: ['Support', 'Billing', 'Sales', 'Retention'], menuSec: 55, selfService: 0.18, authFailure: 0.12, version: 12 },
+  { name: 'Spanish IVR', type: 'inboundcall', description: 'Spanish line', queues: ['Spanish Support'], menuSec: 40, selfService: 0.08, authFailure: 0.1, version: 7 },
+  { name: 'Messaging Bot', type: 'digitalbot', description: 'Answers common questions on web messaging and WhatsApp before handing over to an agent', queues: ['Chat Support'], menuSec: 70, selfService: 0.3, authFailure: 0, version: 4 },
 ];
 
 /** Days the center is closed, local dates. */
@@ -1294,6 +1469,58 @@ const HOLIDAYS: [string, string][] = [
 ];
 
 const SUPERVISORS = ['Laura Benítez', 'Marco Silva'];
+
+const TEAMS: { name: string; description: string; division: string; manager: string; members: string[] }[] = [
+  { name: 'Support North', description: 'English voice support, early shift', division: 'Customer Care', manager: 'Laura Benítez', members: ['Ana Torres', 'Ben Carter', 'Emma Wilson', 'Wendy Clark', 'Zoe Adams', 'Hugo Moreno'] },
+  { name: 'Billing Desk', description: 'Billing and payments', division: 'Customer Care', manager: 'Marco Silva', members: ['Grace Lee', 'Isabel Gómez', 'Jack Turner', 'Karen Diaz', 'Quinn Foster'] },
+  { name: 'Digital', description: 'Web messaging, WhatsApp and Facebook', division: 'Customer Care', manager: 'Laura Benítez', members: ['Chloe Martin', 'Sam Patel', 'Tara Nguyen', 'Victor Castro', 'Yara Haddad'] },
+  { name: 'Spanish Desk', description: 'Support in Spanish', division: 'Customer Care', manager: 'Andrea Molina', members: ['Daniel Ruiz', 'Felipe Rojas', 'Rosa Herrera', 'Xavier Mendez'] },
+  { name: 'Sales and Retention', description: 'Sales, upgrades and cancellations', division: 'Sales', manager: 'Andrea Molina', members: ['Liam Brooks', 'Maria Silva', 'Noah Price', 'Olivia Reed', 'Pablo Vega'] },
+];
+
+/** What customers ask the messaging bot. Self-service intents are often solved without an agent. */
+const BOT_INTENTS: { name: string; selfService: boolean; inputs: string[] }[] = [
+  { name: 'Order status', selfService: true, inputs: ['where is my order', 'order status', 'has my package shipped'] },
+  { name: 'Reset password', selfService: true, inputs: ['I forgot my password', 'reset password', 'cannot log in'] },
+  { name: 'Opening hours', selfService: true, inputs: ['what time do you open', 'are you open on Sunday'] },
+  { name: 'Invoice copy', selfService: true, inputs: ['send me my invoice', 'I need a copy of my bill'] },
+  { name: 'Technical problem', selfService: false, inputs: ['my internet is not working', 'the app keeps crashing', 'no signal since this morning'] },
+  { name: 'Billing question', selfService: false, inputs: ['why is my bill higher', 'I was charged twice', 'question about my invoice'] },
+  { name: 'Cancel service', selfService: false, inputs: ['I want to cancel', 'cancel my plan'] },
+  { name: 'Talk to an agent', selfService: false, inputs: ['agent', 'talk to a person', 'human please'] },
+];
+
+/** Messages the bot did not understand. Some carry personal data, to show the masking. */
+const BOT_UNRECOGNIZED = [
+  'my modem blinks orange since yesterday',
+  'can I pay with a card from another country',
+  'call me at 555 301 2297 please',
+  'is there an outage in my area',
+  'the technician did not come',
+  'change the plan of my mother, her email is ana.ruiz@example.org',
+  'do you have student discounts',
+  '??',
+];
+
+/**
+ * Recent configuration changes, as days before today and local time. They match the demo
+ * configuration: the published flow versions, the Billing alerting timeout and the meeting slot.
+ */
+const AUDIT_EVENTS: { daysAgo: number; time: string; user: string; service: string; entityType: string; entity: string; action: string; changes: { property: string; oldValues: string[]; newValues: string[] }[] }[] = [
+  { daysAgo: 0, time: '07:41', user: 'Laura Benítez', service: 'Architect', entityType: 'Flow', entity: 'Main IVR', action: 'Publish', changes: [{ property: 'version', oldValues: ['11'], newValues: ['12'] }] },
+  { daysAgo: 1, time: '18:05', user: 'Marco Silva', service: 'Routing', entityType: 'Queue', entity: 'Billing', action: 'Update', changes: [{ property: 'mediaSettings.call.alertingTimeoutSeconds', oldValues: ['15'], newValues: ['8'] }] },
+  { daysAgo: 1, time: '18:07', user: 'Marco Silva', service: 'Routing', entityType: 'Queue', entity: 'Billing', action: 'Update', changes: [{ property: 'acwSettings.timeoutMs', oldValues: ['30000'], newValues: ['60000'] }] },
+  { daysAgo: 2, time: '10:32', user: 'Andrea Molina', service: 'Directory', entityType: 'User', entity: 'Tara Nguyen', action: 'Update', changes: [{ property: 'skills', oldValues: ['Chat'], newValues: ['Chat', 'Technical'] }] },
+  { daysAgo: 3, time: '16:20', user: 'Laura Benítez', service: 'Architect', entityType: 'Schedule', entity: 'Quarterly team meeting', action: 'Create', changes: [{ property: 'start', oldValues: [], newValues: ['2026-11-27T08:00:00.000'] }, { property: 'end', oldValues: [], newValues: ['2026-11-27T09:30:00.000'] }] },
+  { daysAgo: 3, time: '16:24', user: 'Laura Benítez', service: 'Architect', entityType: 'ScheduleGroup', entity: 'Contact Center Hours', action: 'Update', changes: [{ property: 'closedSchedules', oldValues: [], newValues: ['Quarterly team meeting'] }] },
+  { daysAgo: 4, time: '11:02', user: 'Marco Silva', service: 'Routing', entityType: 'WrapupCode', entity: 'Follow-up needed', action: 'Update', changes: [{ property: 'name', oldValues: ['Follow up'], newValues: ['Follow-up needed'] }] },
+  { daysAgo: 6, time: '09:15', user: 'Marco Silva', service: 'Routing', entityType: 'Queue', entity: 'Spanish Support', action: 'Update', changes: [{ property: 'mediaSettings.call.serviceLevel.percentage', oldValues: ['0.85'], newValues: ['0.8'] }] },
+  { daysAgo: 8, time: '14:40', user: 'Laura Benítez', service: 'Architect', entityType: 'Flow', entity: 'Spanish IVR', action: 'Publish', changes: [{ property: 'version', oldValues: ['6'], newValues: ['7'] }] },
+  { daysAgo: 9, time: '08:50', user: 'Andrea Molina', service: 'Routing', entityType: 'Queue', entity: 'Support', action: 'Update', changes: [{ property: 'members', oldValues: [], newValues: ['Olivia Reed'] }] },
+  { daysAgo: 12, time: '17:30', user: 'Laura Benítez', service: 'Architect', entityType: 'Schedule', entity: 'Independence of Cartagena', action: 'Create', changes: [] },
+  { daysAgo: 13, time: '10:05', user: 'Marco Silva', service: 'Architect', entityType: 'Flow', entity: 'Messaging Bot', action: 'Publish', changes: [{ property: 'version', oldValues: ['3'], newValues: ['4'] }] },
+  { daysAgo: 20, time: '15:00', user: 'Andrea Molina', service: 'Directory', entityType: 'User', entity: 'Yara Haddad', action: 'Create', changes: [] },
+];
 
 const CAMPAIGNS: Omit<DemoCampaign, 'id' | 'contactListId' | 'queueId'>[] = [
   { name: 'Upgrade offers', queue: 'Sales', dialingMode: 'progressive', status: 'on', contactList: 'Upgrade candidates Q4', totalContacts: 4200, calledBefore: 0, startDate: '2026-10-01' },
@@ -1445,6 +1672,13 @@ function onShift(a: DemoAgent, t: number): boolean {
 /** A fixed quality level per agent, between 72 and 93, that drives evaluation scores and survey answers. */
 function agentQuality(agentId: string): number {
   return 72 + (hash(`quality:${agentId}`) % 22);
+}
+
+/** Messaging conversations arrive on web messaging, WhatsApp or Facebook Messenger. */
+function messageTypeOf(c: DemoConversation): string | undefined {
+  if (c.mediaType !== 'message') return undefined;
+  const h = hash(`mt:${c.id}`) % 100;
+  return h < 55 ? 'webmessaging' : h < 87 ? 'whatsapp' : 'facebook';
 }
 
 function attempts(c: DemoConversation): number {
@@ -1640,6 +1874,18 @@ function page<T>(items: T[], q: RequestOptions['query'] & object) {
     pageNumber,
     total: items.length,
     pageCount: Math.max(1, Math.ceil(items.length / pageSize)),
+  };
+}
+
+/** A page of a listing that uses cursors (after / nextUri) instead of page numbers. */
+function cursorPage<T>(items: T[], q: RequestOptions['query'] & object, path: string) {
+  const pageSize = Number(q.pageSize ?? 25);
+  const from = Number(q.after ?? 0);
+  const next = from + pageSize;
+  const rest = Object.entries(q).filter(([k, v]) => k !== 'after' && v !== undefined).map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`);
+  return {
+    entities: items.slice(from, next),
+    ...(next < items.length ? { nextUri: `${path}?${[...rest, `after=${next}`].join('&')}` } : {}),
   };
 }
 

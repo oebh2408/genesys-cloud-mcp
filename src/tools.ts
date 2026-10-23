@@ -23,6 +23,7 @@ import {
   type UserEntity,
 } from './kit.js';
 import { maskAddress, maskName } from './redact.js';
+import { organizationTools } from './organization.js';
 import { supervisionTools } from './supervision.js';
 import { evaluate, formatLocal, nextChange, upcomingHolidays, type Schedule, type ScheduleGroup } from './schedule.js';
 import { resolveInterval, type ResolvedInterval } from './time.js';
@@ -568,7 +569,7 @@ export const tools = [
     name: 'get_flow_performance',
     title: 'IVR and flow performance',
     description:
-      'Architect inbound flows (IVR, chat bot) for an interval: how many entered, how many were transferred out to a queue, how many ended inside the flow (self-service, hang-ups in the menus, closed messages), average time in the flow and flow outcomes. Optionally split into time buckets.',
+      'Architect inbound flows (IVR, bots) for an interval: how many entered, how many were transferred out to a queue, how many ended inside the flow (self-service, hang-ups in the menus, closed messages), average time in the flow and flow outcomes. Optionally split into time buckets.',
     input: {
       flows: z.array(z.string()).optional().describe('Flow names or ids. Omit for all inbound flows.'),
       interval: intervalArg,
@@ -577,7 +578,7 @@ export const tools = [
     async run({ flows, interval, granularity }, ctx) {
       const range = resolveInterval(interval, ctx.now(), ctx.timeZone);
       const all = await ctx.directory.flows();
-      const targets = flows?.length ? await ctx.directory.resolveFlows(flows) : all.filter((f) => !f.type || /^inbound/i.test(f.type));
+      const targets = flows?.length ? await ctx.directory.resolveFlows(flows) : all.filter((f) => !f.type || /^inbound|bot$/i.test(f.type));
       if (!targets.length) return { interval: range.iso, flows: [] };
       const res = await ctx.client.request<AggregateResult>('POST', '/api/v2/analytics/flows/aggregates/query', {
         body: {
@@ -662,6 +663,7 @@ export const tools = [
   }),
 
   ...supervisionTools,
+  ...organizationTools,
 ];
 
 // ---- helpers -----------------------------------------------------------------------------
