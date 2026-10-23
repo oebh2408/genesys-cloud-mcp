@@ -40,6 +40,15 @@ describe('server', () => {
       'get_wrapup_summary',
       'get_flow_performance',
       'get_schedule_status',
+      'get_quality_summary',
+      'list_evaluations',
+      'get_survey_summary',
+      'list_survey_responses',
+      'get_adherence',
+      'get_agent_schedule',
+      'get_staffing',
+      'get_callbacks',
+      'get_campaigns',
     ]);
     for (const t of tools) expect(t.annotations?.readOnlyHint).toBe(true);
     const { prompts } = await client.listPrompts();
@@ -66,7 +75,9 @@ describe('server', () => {
     const perf = await call('get_queue_performance', { queues: ['Billing'], interval: 'yesterday' });
     const row = perf.queues[0];
     expect(row.offered).toBeGreaterThan(50);
-    expect(row.answered + row.abandoned).toBe(row.offered);
+    // callers who took a callback left the queue without being answered or abandoning
+    expect(row.leftForCallback).toBeGreaterThan(0);
+    expect(row.answered + row.abandoned + row.leftForCallback).toBe(row.offered);
     expect(row.serviceLevelPercent).toBeGreaterThan(0);
     expect(row.serviceLevelPercent).toBeLessThanOrEqual(100);
 
@@ -146,20 +157,23 @@ describe('server', () => {
     const res = await call('get_agent_status_summary', { queue: 'Billing', interval: 'yesterday' });
     expect(res.count).toBe(5);
     for (const a of res.agents) {
-      expect(a.loggedInMinutes).toBe(540);
+      // nine-hour shifts, less a late login or an early finish
+      expect(a.loggedInMinutes).toBeGreaterThan(500);
+      expect(a.loggedInMinutes).toBeLessThanOrEqual(540);
       expect(a.onQueueMinutes + a.offQueueMinutes).toBe(a.loggedInMinutes);
       expect(Math.abs(a.idleMinutes + a.interactingMinutes - a.onQueueMinutes)).toBeLessThanOrEqual(2);
-      // lunch is 30 minutes, shorter when an interaction runs into it
+      // lunch is scheduled for 30 minutes: shorter when an interaction runs into it, longer when it runs over
       expect(a.offQueueBy.mealMinutes).toBeGreaterThan(10);
-      expect(a.offQueueBy.mealMinutes).toBeLessThanOrEqual(30);
+      expect(a.offQueueBy.mealMinutes).toBeLessThanOrEqual(40);
       expect(a.occupancyPercent).toBeGreaterThan(20);
     }
   });
 
   it('timeline covers the shift and lists the interactions handled', async () => {
     const tl = await call('get_agent_timeline', { agent: 'Karen Diaz', interval: 'yesterday' });
-    expect(tl.timeline[0].start).toBe('2026-10-20T16:00:00Z');
-    expect(tl.timeline.at(-1).end).toBe('2026-10-21T01:00:00Z');
+    // shift 11:00-20:00 local
+    expect(tl.timeline[0].start >= '2026-10-20T16:00:00Z' && tl.timeline[0].start < '2026-10-20T16:15:00Z').toBe(true);
+    expect(tl.timeline.at(-1).end > '2026-10-21T00:40:00Z' && tl.timeline.at(-1).end <= '2026-10-21T01:00:00Z').toBe(true);
     for (let i = 1; i < tl.timeline.length; i++) expect(tl.timeline[i].start).toBe(tl.timeline[i - 1].end);
     expect(tl.timeline.map((t: { presence: string }) => t.presence)).toContain('Meal');
     const perf = await call('get_agent_performance', { agents: ['Karen Diaz'], interval: 'yesterday' });
@@ -181,7 +195,10 @@ describe('server', () => {
     const flows = await call('get_flow_performance', { interval: 'yesterday' });
     const main = flows.flows.find((f: { flow: string }) => f.flow === 'Main IVR');
     const perf = await call('get_queue_performance', { queues: ['Support', 'Billing', 'Sales', 'Retention'], interval: 'yesterday' });
-    expect(main.transferredOut).toBe(perf.queues.reduce((n: number, q: { offered: number }) => n + q.offered, 0));
+    const callbacks = await call('get_callbacks', { interval: 'yesterday' });
+    const requested = callbacks.queues.filter((q: { queue: string }) => q.queue !== 'Spanish Support').reduce((n: number, q: { requested: number }) => n + q.requested, 0);
+    // callbacks are offered to the queue but do not go through the IVR
+    expect(main.transferredOut).toBe(perf.queues.reduce((n: number, q: { offered: number }) => n + q.offered, 0) - requested);
     expect(main.entered).toBe(main.transferredOut + main.endedInFlow);
     expect(main.outcomesSucceeded).toBeGreaterThan(0);
     const hourly = await call('get_flow_performance', { flows: ['chat bot'], interval: 'yesterday', granularity: 'PT1H' });
@@ -194,6 +211,76 @@ describe('server', () => {
     expect(now.scheduleGroups[0].upcomingHolidays[0]).toEqual({ name: "All Saints' Day", date: '2026-11-02' });
     const holiday = await call('get_schedule_status', { at: '2026-11-02T15:00:00Z' });
     expect(holiday.scheduleGroups[0]).toMatchObject({ status: 'holiday', schedule: "All Saints' Day", nextChange: { localTime: '2026-11-03 00:00' } });
+  });
+
+  it('quality summary and evaluation list agree', async () => {
+    const sum = await call('get_quality_summary', { interval: 'last 7d' });
+    expect(sum.total.evaluations).toBeGreaterThan(50);
+    expect(sum.total.avgScore).toBeGreaterThan(60);
+    const list = await call('list_evaluations', { interval: 'last 7d', limit: 100 });
+    expect(list.released).toBe(sum.total.evaluations);
+    const failures = await call('list_evaluations', { interval: 'last 7d', criticalFailuresOnly: true, limit: 100 });
+    expect(failures.evaluations.every((e: { criticalScore: number }) => e.criticalScore < 100)).toBe(true);
+    const byEvaluator = await call('get_quality_summary', { interval: 'last 7d', groupBy: 'evaluator' });
+    expect(byEvaluator.rows.map((r: { evaluator: string }) => r.evaluator).sort()).toEqual(['Laura Benítez', 'Marco Silva']);
+    const isabel = await call('list_evaluations', { interval: 'last 30d', agent: 'Isabel' });
+    expect(isabel.evaluations.every((e: { agent: string }) => e.agent === 'Isabel Gómez')).toBe(true);
+  });
+
+  it('survey summary, NPS and masked comments', async () => {
+    const sum = await call('get_survey_summary', { interval: 'last 7d' });
+    const t = sum.total;
+    expect(t.responses).toBeLessThan(t.sent);
+    expect(t.nps).toBe(Math.round(((t.promoters - t.detractors) / t.responses) * 100));
+    const rows = sum.rows.reduce((n: number, r: { sent: number }) => n + r.sent, 0);
+    expect(rows).toBe(t.sent);
+    const detractors = await call('list_survey_responses', { interval: 'last 30d', only: 'detractors', limit: 50 });
+    expect(detractors.responses.every((r: { nps: number }) => r.nps <= 6)).toBe(true);
+    const comments = detractors.responses.map((r: { comment?: string }) => r.comment).filter(Boolean).join(' ');
+    expect(comments).not.toMatch(/555-201-8890|maria\.lopez@/);
+    expect(comments).toMatch(/•••8890|m•••@example\.net/);
+  });
+
+  it('adherence compares the schedule with what agents do', async () => {
+    const res = await call('get_adherence', { queue: 'Support' });
+    expect(res.agents).toBeGreaterThan(5);
+    expect(res.inAdherence + res.outOfAdherence).toBe(res.agents);
+    for (const r of res.rows) {
+      if (r.adherence === 'InAdherence') expect(r.scheduled).toBe(r.actual);
+      else expect(r.scheduled).not.toBe(r.actual);
+    }
+    // out of adherence first
+    expect(res.rows[0].adherence).toBe(res.outOfAdherence ? 'OutOfAdherence' : 'InAdherence');
+  });
+
+  it('schedules have breaks and lunch, and staffing follows them', async () => {
+    const sched = await call('get_agent_schedule', { agents: ['Chloe Martin'] });
+    const shift = sched.agents[0].shifts[0];
+    expect(shift).toMatchObject({ start: '09:00', end: '18:00', paidMinutes: 510, onQueueMinutes: 480 });
+    expect(shift.activities.map((a: { category: string }) => a.category)).toEqual(['OnQueueWork', 'Break', 'OnQueueWork', 'Meal', 'OnQueueWork', 'Break', 'OnQueueWork']);
+    const weekend = await call('get_agent_schedule', { queue: 'Support', day: '2026-10-24' });
+    expect(weekend.notScheduled.length).toBeGreaterThan(0);
+    expect(weekend.agents.every((a: { shifts: { start: string }[] }) => a.shifts[0]!.start === '09:00')).toBe(true);
+    const staffing = await call('get_staffing', { queue: 'Billing', day: 'yesterday', granularity: 'PT1H' });
+    const perf = await call('get_queue_performance', { queues: ['Billing'], interval: 'yesterday' });
+    expect(staffing.series.reduce((n: number, r: { offered: number }) => n + r.offered, 0)).toBe(perf.queues[0].offered);
+    for (const r of staffing.series) expect(r.actualOnQueue).toBeLessThanOrEqual(staffing.members);
+    const holiday = await call('get_agent_schedule', { queue: 'Billing', day: '2026-11-02' });
+    expect(holiday.scheduled).toBe(0);
+  });
+
+  it('callbacks and outbound campaigns', async () => {
+    const cb = await call('get_callbacks', { interval: 'yesterday' });
+    const billing = cb.queues.find((q: { queue: string }) => q.queue === 'Billing');
+    const perf = await call('get_queue_performance', { queues: ['Billing'], interval: 'yesterday' });
+    expect(billing.requested).toBe(perf.queues[0].leftForCallback);
+    expect(billing.completed).toBeLessThanOrEqual(billing.requested);
+    const camps = await call('get_campaigns', { interval: 'last 7d' });
+    const upgrade = camps.campaigns.find((c: { campaign: string }) => c.campaign === 'Upgrade offers');
+    expect(upgrade).toMatchObject({ status: 'on', queue: 'Sales', dialingMode: 'progressive' });
+    expect(upgrade.inInterval.attempted).toBeGreaterThanOrEqual(upgrade.inInterval.connected);
+    expect(upgrade.inInterval.wrapUps.map((w: { wrapUp: string }) => w.wrapUp)).toContain('Sale completed');
+    expect(camps.campaigns.find((c: { campaign: string }) => c.campaign === 'Payment reminders').progress.percent).toBe(100);
   });
 
   it('reports unknown names as tool errors', async () => {

@@ -43,32 +43,32 @@ text{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Li
 <text x="44.86" y="64" fill="#F4F2EC" clip-path="url(#typed)" xml:space="preserve">npm run try</text>
 <text class="l0" x="28" y="85" xml:space="preserve"><tspan fill="#A98BFF" >→ </tspan><tspan fill="#6FF2C6" >get_queue_status</tspan><tspan fill="#8B86A0" > {}</tspan></text>
 <text class="l2" x="28" y="127" xml:space="preserve"><tspan fill="#8B86A0" >  queue             waiting   longest wait   interacting   on queue   idle</tspan></text>
-<text class="l3" x="28" y="148" xml:space="preserve"><tspan fill="#F4F2EC" >  Support                 0             0s             4         11      6</tspan></text>
+<text class="l3" x="28" y="148" xml:space="preserve"><tspan fill="#F4F2EC" >  Support                 0             0s             4         12      4</tspan></text>
 <text class="l4" x="28" y="169" xml:space="preserve"><tspan fill="#F4F2EC" >  Billing                 0             0s             3          5      2</tspan></text>
-<text class="l5" x="28" y="190" xml:space="preserve"><tspan fill="#F4F2EC" >  Sales                   1            49s             2          4      0</tspan></text>
+<text class="l5" x="28" y="190" xml:space="preserve"><tspan fill="#F4F2EC" >  Sales                   1            49s             3          4      0</tspan></text>
 <text class="l6" x="28" y="211" xml:space="preserve"><tspan fill="#F4F2EC" >  Retention               0             0s             1          4      2</tspan></text>
 <text class="l7" x="28" y="232" xml:space="preserve"><tspan fill="#F4F2EC" >  Spanish Support         0             0s             3          4      1</tspan></text>
-<text class="l8" x="28" y="253" xml:space="preserve"><tspan fill="#F4F2EC" >  Chat Support            0             0s             1          4      2</tspan></text>
+<text class="l8" x="28" y="253" xml:space="preserve"><tspan fill="#F4F2EC" >  Chat Support            0             0s             1          6      4</tspan></text>
 <text class="l10" x="28" y="295" xml:space="preserve"><tspan fill="#A98BFF" >→ </tspan><tspan fill="#6FF2C6" >get_queue_performance</tspan><tspan fill="#8B86A0" > {"interval":"today"}</tspan></text>
 <text class="l12" x="28" y="337" xml:space="preserve"><tspan fill="#8B86A0" >  queue             offered   abandoned   service level   avg answer   avg handle</tspan></text>
-<text class="l13" x="28" y="358" xml:space="preserve"><tspan fill="#F4F2EC" >  Support                90   </tspan><tspan fill="#F4F2EC" >       0%</tspan><tspan fill="#F4F2EC" >             90%           6s       6m 27s</tspan></text>
-<text class="l14" x="28" y="379" xml:space="preserve"><tspan fill="#F4F2EC" >  Billing                79   </tspan><tspan fill="#F2C46D" >    31.6%</tspan><tspan fill="#F4F2EC" >           48.6%          29s       5m 34s</tspan></text>
-<text class="l15" x="28" y="400" xml:space="preserve"><tspan fill="#F4F2EC" >  Chat Support           40   </tspan><tspan fill="#F4F2EC" >    12.5%</tspan><tspan fill="#F4F2EC" >           76.3%          18s       9m 57s</tspan></text>
-<text class="l16" x="28" y="421" xml:space="preserve"><tspan fill="#F4F2EC" >  Sales                  39   </tspan><tspan fill="#F2C46D" >    28.2%</tspan><tspan fill="#F4F2EC" >           61.1%          19s       8m 12s</tspan></text>
-<text class="l17" x="28" y="442" xml:space="preserve"><tspan fill="#F4F2EC" >  Spanish Support        37   </tspan><tspan fill="#F2C46D" >    21.6%</tspan><tspan fill="#F4F2EC" >           64.7%          34s       7m 38s</tspan></text>
-<text class="l18" x="28" y="463" xml:space="preserve"><tspan fill="#F4F2EC" >  Retention              24   </tspan><tspan fill="#F4F2EC" >    12.5%</tspan><tspan fill="#F4F2EC" >           83.3%           8s      10m 26s</tspan></text>
+<text class="l13" x="28" y="358" xml:space="preserve"><tspan fill="#F4F2EC" >  Support                91   </tspan><tspan fill="#F4F2EC" >     2.2%</tspan><tspan fill="#F4F2EC" >           94.3%           7s       6m 05s</tspan></text>
+<text class="l14" x="28" y="379" xml:space="preserve"><tspan fill="#F4F2EC" >  Billing                87   </tspan><tspan fill="#F2C46D" >    21.8%</tspan><tspan fill="#F4F2EC" >           58.9%          23s       5m 09s</tspan></text>
+<text class="l15" x="28" y="400" xml:space="preserve"><tspan fill="#F4F2EC" >  Chat Support           40   </tspan><tspan fill="#F4F2EC" >    12.5%</tspan><tspan fill="#F4F2EC" >           77.5%          16s      10m 44s</tspan></text>
+<text class="l16" x="28" y="421" xml:space="preserve"><tspan fill="#F4F2EC" >  Sales                  39   </tspan><tspan fill="#F2C46D" >    35.9%</tspan><tspan fill="#F4F2EC" >             50%          32s       8m 13s</tspan></text>
+<text class="l17" x="28" y="442" xml:space="preserve"><tspan fill="#F4F2EC" >  Spanish Support        38   </tspan><tspan fill="#F2C46D" >    21.1%</tspan><tspan fill="#F4F2EC" >           68.6%          21s       7m 24s</tspan></text>
+<text class="l18" x="28" y="463" xml:space="preserve"><tspan fill="#F4F2EC" >  Retention              24   </tspan><tspan fill="#F4F2EC" >    12.5%</tspan><tspan fill="#F4F2EC" >           79.2%          18s       9m 51s</tspan></text>
 <text class="l20" x="28" y="505" xml:space="preserve"><tspan fill="#A98BFF" >→ </tspan><tspan fill="#6FF2C6" >search_conversations</tspan><tspan fill="#8B86A0" > {"interval":"today","queue":"Billing","outcome":"abandoned","limit":4}</tspan></text>
 <text class="l22" x="28" y="547" xml:space="preserve"><tspan fill="#8B86A0" >  started   queue     media   waited   customer   from</tspan></text>
-<text class="l23" x="28" y="568" xml:space="preserve"><tspan fill="#F4F2EC" >  11:33     Billing   voice   1m 20s   J. P.      +1•••9616</tspan></text>
-<text class="l24" x="28" y="589" xml:space="preserve"><tspan fill="#F4F2EC" >  11:22     Billing   voice   1m 06s   N. R.      +1•••5371</tspan></text>
-<text class="l25" x="28" y="610" xml:space="preserve"><tspan fill="#F4F2EC" >  10:57     Billing   voice      13s   J. T.      +1•••3675</tspan></text>
-<text class="l26" x="28" y="631" xml:space="preserve"><tspan fill="#F4F2EC" >  10:57     Billing   voice   1m 27s   J. G.      +1•••4898</tspan></text>
-<text class="l28" x="28" y="673" xml:space="preserve"><tspan fill="#8B86A0" >  4 of 25. Customer names, numbers and addresses are masked by default.</tspan></text>
+<text class="l23" x="28" y="568" xml:space="preserve"><tspan fill="#F4F2EC" >  11:22     Billing   voice      31s   D. M.      +1•••9446</tspan></text>
+<text class="l24" x="28" y="589" xml:space="preserve"><tspan fill="#F4F2EC" >  11:22     Billing   voice      46s   L. S.      +1•••0983</tspan></text>
+<text class="l25" x="28" y="610" xml:space="preserve"><tspan fill="#F4F2EC" >  10:57     Billing   voice      46s   M. T.      +1•••9105</tspan></text>
+<text class="l26" x="28" y="631" xml:space="preserve"><tspan fill="#F4F2EC" >  10:52     Billing   voice      37s   C. B.      +1•••3513</tspan></text>
+<text class="l28" x="28" y="673" xml:space="preserve"><tspan fill="#8B86A0" >  4 of 19. Customer names, numbers and addresses are masked by default.</tspan></text>
 <text class="l30" x="28" y="715" xml:space="preserve"><tspan fill="#A98BFF" >→ </tspan><tspan fill="#6FF2C6" >get_agent_status_summary</tspan><tspan fill="#8B86A0" > {"queue":"Billing","interval":"today"}</tspan></text>
 <text class="l32" x="28" y="757" xml:space="preserve"><tspan fill="#8B86A0" >  agent          logged in   on queue   interacting   off queue   occupancy</tspan></text>
-<text class="l33" x="28" y="778" xml:space="preserve"><tspan fill="#F4F2EC" >  Grace Lee         1h 40m     1h 27m        1h 13m      0h 13m         83%</tspan></text>
-<text class="l34" x="28" y="799" xml:space="preserve"><tspan fill="#F4F2EC" >  Isabel Gómez      3h 40m     2h 42m        2h 05m      0h 58m       77.2%</tspan></text>
-<text class="l35" x="28" y="820" xml:space="preserve"><tspan fill="#F4F2EC" >  Jack Turner       2h 40m     2h 40m        2h 01m      0h 00m       75.6%</tspan></text>
-<text class="l36" x="28" y="841" xml:space="preserve"><tspan fill="#F4F2EC" >  Karen Diaz        0h 40m     0h 40m        0h 15m      0h 00m       37.5%</tspan></text>
-<text class="l37" x="28" y="862" xml:space="preserve"><tspan fill="#F4F2EC" >  Quinn Foster      0h 40m     0h 40m        0h 20m      0h 00m         50%</tspan></text>
+<text class="l33" x="28" y="778" xml:space="preserve"><tspan fill="#F4F2EC" >  Grace Lee         1h 25m     1h 25m        1h 18m      0h 00m       91.8%</tspan></text>
+<text class="l34" x="28" y="799" xml:space="preserve"><tspan fill="#F4F2EC" >  Isabel Gómez      3h 40m     3h 05m        2h 04m      0h 35m       67.4%</tspan></text>
+<text class="l35" x="28" y="820" xml:space="preserve"><tspan fill="#F4F2EC" >  Jack Turner       2h 40m     2h 30m        1h 53m      0h 10m       75.3%</tspan></text>
+<text class="l36" x="28" y="841" xml:space="preserve"><tspan fill="#F4F2EC" >  Karen Diaz        0h 35m     0h 35m        0h 23m      0h 00m       65.7%</tspan></text>
+<text class="l37" x="28" y="862" xml:space="preserve"><tspan fill="#F4F2EC" >  Quinn Foster      0h 40m     0h 40m        0h 31m      0h 00m       77.5%</tspan></text>
 </svg>

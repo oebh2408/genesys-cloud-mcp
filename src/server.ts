@@ -32,7 +32,7 @@ export function createServer(options: ServerOptions): McpServer {
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions: [
-        'Read-only access to a Genesys Cloud contact center: queues, agents, conversations and analytics.',
+        'Read-only access to a Genesys Cloud contact center: queues, agents, conversations, IVR flows, opening hours, quality evaluations, surveys, workforce management schedules and outbound campaigns.',
         `Relative intervals such as "today" use the ${ctx.timeZone} time zone.`,
         'Times in results are ISO-8601 UTC. Durations are in seconds unless the field name says minutes. Service level uses a 20 second target.',
         ctx.redact ? 'Customer phone numbers, emails and names are masked.' : '',
@@ -97,9 +97,9 @@ export function createServer(options: ServerOptions): McpServer {
     },
     ({ day }) => prompt(
       `Write a summary of ${day ?? 'yesterday'} for the operations team.`,
-      `Use compare_queue_performance with interval "${day ?? 'yesterday'}" for volumes, service level and abandons against the same day a week earlier, get_flow_performance for the IVR and chat bot, and get_wrapup_summary for how interactions were closed.`,
+      `Use compare_queue_performance with interval "${day ?? 'yesterday'}" for volumes, service level and abandons against the same day a week earlier, get_flow_performance for the IVR and chat bot, get_wrapup_summary for how interactions were closed, get_callbacks for callbacks, and get_survey_summary for NPS.`,
       'Start with three lines: total offered, overall service level and abandon rate, each with the change. Then one line per queue that missed 80% service level or 5% abandon rate, and one line on the IVR (share that ended in the flow and outcomes that failed).',
-      'Finish with the two wrap-up codes that changed the most if they are notable. Plain numbers, no more than 250 words.',
+      'Finish with NPS and the response rate, and the two wrap-up codes that changed the most if they are notable. Plain numbers, no more than 250 words.',
     ),
   );
 
@@ -107,13 +107,13 @@ export function createServer(options: ServerOptions): McpServer {
     'agent_review',
     {
       title: 'Agent review',
-      description: 'Prepare a one-to-one with an agent: volume, handle time against the team, time on queue, occupancy and wrap-up codes.',
+      description: 'Prepare a one-to-one with an agent: volume, handle time against the team, time on queue and adherence, quality scores, survey results and wrap-up codes.',
       argsSchema: { agent: z.string().describe('Agent name'), interval: z.string().optional().describe('this_week (default), last 7d, last 30d...') },
     },
     ({ agent, interval }) => prompt(
       `Prepare notes for a one-to-one with ${agent} covering ${interval ?? 'this_week'}.`,
-      `Use get_agent for queues and skills, get_agent_performance for ${agent} and for the same queues without an agent filter to have the team average, get_agent_status_summary for time on queue and occupancy, and get_wrapup_summary with the agent for how they close interactions.`,
-      'Compare handle, hold and after-call work with the team average and say where the agent is more than 20% above or below. Mention time off queue by type if it is above 15% of the logged-in time.',
+      `Use get_agent for queues and skills, get_agent_performance for ${agent} and for the same queues without an agent filter to have the team average, get_agent_status_summary for time on queue and occupancy, get_quality_summary and list_evaluations for quality scores and critical failures, get_survey_summary and list_survey_responses with the agent for what customers said, and get_wrapup_summary with the agent for how they close interactions.`,
+      'Compare handle, hold and after-call work with the team average and say where the agent is more than 20% above or below. Mention time off queue by type if it is above 15% of the logged-in time. Quote at most two customer comments.',
       'Write it as facts to discuss, not as a judgement, in under 200 words.',
     ),
   );
@@ -127,8 +127,8 @@ export function createServer(options: ServerOptions): McpServer {
     },
     ({ queue, interval }) => prompt(
       `Investigate the abandoned interactions in ${queue} for ${interval ?? 'today'}.`,
-      `Use get_queue_performance with granularity PT30M to find the half hours with the most abandons, search_conversations with outcome "abandoned" to see how long callers waited before hanging up, get_agent_status_summary for the queue members in the worst half hours, and get_flow_performance for the entry flow.`,
-      'Check get_schedule_status if the abandons are near opening or closing time. Say whether the cause looks like volume, staffing (agents off queue or not logged in), long handle times, or callers giving up early, and back it with the numbers.',
+      `Use get_queue_performance with granularity PT30M to find the half hours with the most abandons, search_conversations with outcome "abandoned" to see how long callers waited before hanging up, get_staffing to compare scheduled and actual agents in those half hours, get_callbacks to see whether callers took a callback instead, and get_flow_performance for the entry flow.`,
+      'Check get_schedule_status if the abandons are near opening or closing time. Say whether the cause looks like volume, a schedule with too few agents, agents not following the schedule, long handle times, or callers giving up early, and back it with the numbers.',
       'Keep it under 250 words.',
     ),
   );

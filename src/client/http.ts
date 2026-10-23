@@ -33,7 +33,10 @@ export class HttpPlatformClient implements PlatformClient {
   async request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
     assertReadOnly(method, path);
     const url = new URL(`https://api.${this.options.region}${path}`);
-    for (const [k, v] of Object.entries(options.query ?? {})) if (v !== undefined) url.searchParams.set(k, String(v));
+    for (const [k, v] of Object.entries(options.query ?? {})) {
+      if (Array.isArray(v)) for (const item of v) url.searchParams.append(k, item);
+      else if (v !== undefined) url.searchParams.set(k, String(v));
+    }
 
     const maxRetries = this.options.maxRetries ?? 3;
     for (let attempt = 0; ; attempt++) {

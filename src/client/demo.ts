@@ -19,6 +19,11 @@ export class DemoPlatformClient implements PlatformClient {
   private readonly flowDays = new Map<number, DemoFlowSession[]>();
   private readonly skills: { id: string; name: string }[];
   private readonly scheduleGroup: { id: string; name: string; timeZone: string; open: DemoSchedule[]; closed: DemoSchedule[]; holidays: DemoSchedule[] };
+  private readonly supervisors: { id: string; name: string }[];
+  private readonly campaigns: DemoCampaign[];
+  private readonly forms: { id: string; name: string }[];
+  private readonly wfm: { managementUnitId: string; businessUnitId: string; codes: Record<ActivityCategory, string> };
+  private readonly qualityDays = new Map<number, DemoEvaluation[]>();
 
   constructor(private readonly now: () => Date = () => new Date()) {
     const rng = random(7);
@@ -46,6 +51,16 @@ export class DemoPlatformClient implements PlatformClient {
       closed: [schedule('Quarterly team meeting', '2026-11-27T08:00:00.000', '2026-11-27T09:30:00.000')],
       holidays: HOLIDAYS.map(([date, name]) => schedule(name, `${date}T00:00:00.000`, `${nextDate(date)}T00:00:00.000`)),
     };
+    this.supervisors = SUPERVISORS.map((name) => ({ id: uuid(rng), name }));
+    const extra = [...new Set(Object.values(CAMPAIGN_WRAPUPS).flat())].filter((name) => !WRAPUPS.includes(name));
+    this.wrapups.push(...extra.map((name) => ({ id: uuid(rng), name })));
+    this.campaigns = CAMPAIGNS.map((c) => ({ ...c, id: uuid(rng), contactListId: uuid(rng), queueId: c.queue ? this.queues.find((q) => q.name === c.queue)!.id : undefined }));
+    this.forms = ['Voice quality v3', 'Chat quality v2'].map((name) => ({ id: uuid(rng), name }));
+    this.wfm = {
+      managementUnitId: uuid(rng),
+      businessUnitId: uuid(rng),
+      codes: Object.fromEntries((['OnQueueWork', 'Break', 'Meal', 'Meeting', 'Training'] as ActivityCategory[]).map((c) => [c, uuid(rng)])) as Record<ActivityCategory, string>,
+    };
   }
 
   async request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
@@ -59,14 +74,40 @@ export class DemoPlatformClient implements PlatformClient {
     if (method === 'GET' && (m = /^\/api\/v2\/routing\/queues\/([^/]+)\/members$/.exec(path))) return this.queueMembers(m[1]!, q) as T;
     if (method === 'GET' && (m = /^\/api\/v2\/routing\/queues\/([^/]+)\/wrapupcodes$/.exec(path))) {
       const queue = this.queue(m[1]!);
-      return page(this.wrapups.filter((w) => queue.wrapups.includes(w.name)), q) as T;
+      return page(this.wrapups.filter((w) => queue.wrapups.includes(w.name) || (queue.campaign && CAMPAIGN_WRAPUPS[queue.campaign]!.includes(w.name))), q) as T;
     }
     if (method === 'GET' && path === '/api/v2/users') return this.listUsers(q) as T;
     if (method === 'GET' && (m = /^\/api\/v2\/users\/([^/]+)\/queues$/.exec(path))) {
       const agent = this.agent(m[1]!);
       return page(this.queues.filter((x) => agent.queueIds.includes(x.id)).map((x) => ({ id: x.id, name: x.name, joined: true })), q) as T;
     }
-    if (method === 'GET' && (m = /^\/api\/v2\/users\/([^/]+)$/.exec(path))) return this.userEntity(this.agent(m[1]!), String(q.expand ?? '')) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/users\/([^/]+)$/.exec(path))) {
+      const supervisor = this.supervisors.find((x) => x.id === m![1]);
+      if (supervisor) return { ...supervisor, title: 'Team Supervisor', department: 'Quality', state: 'active' } as T;
+      return this.userEntity(this.agent(m[1]!), String(q.expand ?? '')) as T;
+    }
+    if (method === 'GET' && path === '/api/v2/quality/evaluations/query') return this.evaluationsQuery(q) as T;
+    if (path === '/api/v2/analytics/evaluations/aggregates/query') return this.evaluationAggregates(body) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/quality\/conversations\/([^/]+)\/surveys$/.exec(path))) return this.conversationSurveys(m[1]!) as T;
+    if (path === '/api/v2/analytics/surveys/aggregates/query') return this.surveyAggregates(body) as T;
+    if (method === 'GET' && path === '/api/v2/outbound/campaigns') return page(this.campaigns.map((c) => this.campaignEntity(c)), q) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/outbound\/campaigns\/([^/]+)\/(stats|progress)$/.exec(path))) {
+      const campaign = this.campaigns.find((c) => c.id === m![1]);
+      if (!campaign) throw new PlatformError(`Campaign ${m[1]} not found.`, 404);
+      return (m[2] === 'stats' ? this.campaignStats(campaign) : this.campaignProgress(campaign)) as T;
+    }
+    if (method === 'GET' && path === '/api/v2/workforcemanagement/managementunits') {
+      return page([{ id: this.wfm.managementUnitId, name: 'Contact Center', businessUnit: { id: this.wfm.businessUnitId } }], q) as T;
+    }
+    if (method === 'GET' && (m = /^\/api\/v2\/workforcemanagement\/agents\/([^/]+)\/managementunit$/.exec(path))) {
+      const agent = this.agent(m[1]!);
+      return { user: { id: agent.id }, managementUnit: { id: this.wfm.managementUnitId, name: 'Contact Center' }, businessUnit: { id: this.wfm.businessUnitId, name: 'Demo Contact Center' } } as T;
+    }
+    if (method === 'GET' && (m = /^\/api\/v2\/workforcemanagement\/businessunits\/([^/]+)\/activitycodes$/.exec(path))) {
+      return { entities: Object.entries(this.wfm.codes).map(([category, id]) => ({ id, name: ACTIVITY_NAMES[category as ActivityCategory], category, countsAsPaidTime: category !== 'Meal' })) } as T;
+    }
+    if (method === 'POST' && /^\/api\/v2\/workforcemanagement\/managementunits\/[^/]+\/agentschedules\/search$/.test(path)) return this.agentSchedules(body) as T;
+    if (method === 'GET' && path === '/api/v2/workforcemanagement/adherence') return this.adherence(q) as T;
     if (method === 'GET' && path === '/api/v2/routing/wrapupcodes') return page(this.wrapups, q) as T;
     if (method === 'GET' && path === '/api/v2/routing/skills') return page(this.skills, q) as T;
     if (method === 'GET' && path === '/api/v2/flows') {
@@ -193,16 +234,21 @@ export class DemoPlatformClient implements PlatformClient {
   private observations(body: Record<string, unknown>) {
     const now = this.now().getTime();
     const ids = predicateValues(body.filter, 'queueId');
+    const medias = predicateValues(body.filter, 'mediaType');
     const queues = this.queues.filter((x) => !ids.length || ids.includes(x.id));
     const metrics = (body.metrics as string[] | undefined) ?? ['oWaiting', 'oInteracting'];
     const detail = new Set((body.detailMetrics as string[] | undefined) ?? []);
     const active = this.conversationsAround(now);
 
     return {
-      results: queues.map((queue) => {
-        const waiting = active.filter((c) => c.queueId === queue.id && c.start <= now && now < (c.answeredAt ?? c.abandonedAt!));
-        const interacting = active.filter((c) => c.queueId === queue.id && c.answeredAt !== undefined && c.answeredAt <= now && now < c.endAt);
-        const members = this.agents.filter((a) => a.queueIds.includes(queue.id)).map((a) => this.agentState(a));
+      results: queues
+        .flatMap((queue) => (queue.callbackShare ? [queue.mediaType, 'callback'] : [queue.mediaType]).map((media) => ({ queue, media })))
+        .filter(({ media }) => !medias.length || medias.includes(media))
+        .map(({ queue, media }) => {
+        const waiting = active.filter((c) => c.queueId === queue.id && c.mediaType === media && c.start <= now && now < (c.answeredAt ?? c.abandonedAt ?? c.flowOutAt ?? Infinity));
+        const interacting = active.filter((c) => c.queueId === queue.id && c.mediaType === media && c.answeredAt !== undefined && c.answeredAt <= now && now < c.endAt);
+        // Agent counts are reported once per queue, with its main media type.
+        const members = media === queue.mediaType ? this.agents.filter((a) => a.queueIds.includes(queue.id)).map((a) => this.agentState(a)) : [];
         const data: Record<string, unknown>[] = [];
         for (const metric of metrics) {
           if (metric === 'oWaiting' || metric === 'oInteracting') {
@@ -214,6 +260,7 @@ export class DemoPlatformClient implements PlatformClient {
                 conversationId: c.id,
                 sessionId: c.id,
                 ani: `tel:${c.ani}`,
+                ...(c.mediaType === 'callback' ? { callbackNumbers: [`tel:${c.ani}`] } : {}),
                 ...(c.agentId && metric === 'oInteracting' ? { userId: c.agentId } : {}),
               }));
             }
@@ -233,7 +280,7 @@ export class DemoPlatformClient implements PlatformClient {
             }
           }
         }
-        return { group: { queueId: queue.id, mediaType: queue.mediaType }, data };
+        return { group: { queueId: queue.id, mediaType: media }, data };
       }),
     };
   }
@@ -286,9 +333,15 @@ export class DemoPlatformClient implements PlatformClient {
 
     const segmentFilters = (body.segmentFilters as unknown[] | undefined) ?? [];
     const conversationFilters = (body.conversationFilters as unknown[] | undefined) ?? [];
+    const surveyFilters = (body.surveyFilters as unknown[] | undefined) ?? [];
     let list = this.conversationsBetween(interval.start, Math.min(interval.end, now))
       .filter((c) => segmentFilters.every((f) => matches(f, this.dimensions(c))))
-      .filter((c) => conversationFilters.every((f) => matchesMetrics(f, c, now)));
+      .filter((c) => conversationFilters.every((f) => matchesMetrics(f, c, now)))
+      .filter((c) => {
+        if (!surveyFilters.length) return true;
+        const survey = this.surveyFor(c, now);
+        return !!survey && surveyFilters.every((f) => matches(f, { surveyStatus: survey.responded && survey.completedAt <= now ? 'Finished' : 'Sent', surveyFormName: 'Customer satisfaction' }));
+      });
 
     list = list.sort((a, b) => (body.order === 'asc' ? a.start - b.start : b.start - a.start));
     const items = list.slice((pageNumber - 1) * pageSize, pageNumber * pageSize);
@@ -445,7 +498,7 @@ export class DemoPlatformClient implements PlatformClient {
     const out: DemoFlowSession[] = [];
     for (const flow of this.flows) {
       for (const c of convs) {
-        if (c.direction !== 'inbound' || !flow.queueIds.includes(c.queueId)) continue;
+        if (c.direction !== 'inbound' || c.mediaType === 'callback' || !flow.queueIds.includes(c.queueId)) continue;
         const ms = Math.round(flow.menuSec * 1000 * (0.6 + rng() * 0.8));
         out.push({ flowId: flow.id, start: c.start - ms, ms, outcome: 'queue', failedOutcome: rng() < flow.authFailure });
       }
@@ -454,7 +507,7 @@ export class DemoPlatformClient implements PlatformClient {
         const local = (h + DEMO_UTC_OFFSET + 24) % 24;
         const peak = flow.queueIds.reduce((n, id) => n + this.queues.find((q) => q.id === id)!.peakPerHour, 0);
         if (isOpen(hourStart)) {
-          const queued = convs.filter((c) => c.direction === 'inbound' && flow.queueIds.includes(c.queueId) && c.start >= hourStart && c.start < hourStart + 3_600_000).length;
+          const queued = convs.filter((c) => c.direction === 'inbound' && c.mediaType !== 'callback' && flow.queueIds.includes(c.queueId) && c.start >= hourStart && c.start < hourStart + 3_600_000).length;
           for (let i = poisson(queued * flow.selfService, rng); i > 0; i--) {
             out.push({ flowId: flow.id, start: hourStart + Math.floor(rng() * 3_600_000), ms: Math.round((90 + rng() * 150) * 1000), outcome: 'self-service', failedOutcome: false });
           }
@@ -474,6 +527,335 @@ export class DemoPlatformClient implements PlatformClient {
     return out;
   }
 
+  // ---- quality ---------------------------------------------------------------------------
+
+  /** Evaluations of conversations from one day: about one in 25 handled interactions is scored by a supervisor. */
+  private qualityDay(day: number): DemoEvaluation[] {
+    const cached = this.qualityDays.get(day);
+    if (cached) return cached;
+    const out: DemoEvaluation[] = [];
+    for (const c of this.day(day)) {
+      if (!c.agentId || c.answeredAt === undefined || hash(`ev:${c.id}`) % 100 >= 4) continue;
+      const h = (k: string) => hash(`${k}:${c.id}`);
+      const failed = h('evk') % 100 < 6;
+      out.push({
+        id: uuid(random(h('evid'))),
+        conversation: c,
+        evaluatorId: this.supervisors[h('evr') % this.supervisors.length]!.id,
+        formId: this.forms[c.mediaType === 'chat' ? 1 : 0]!.id,
+        releaseAt: c.endAt + (1 + (h('evd') % 3)) * DAY + 3 * 3_600_000,
+        score: Math.max(40, Math.min(100, agentQuality(c.agentId) + (h('evs') % 17) - 8 - (failed ? 12 : 0))),
+        criticalScore: failed ? 0 : 100,
+        failed,
+        read: h('evread') % 3 !== 0,
+      });
+    }
+    this.qualityDays.set(day, out);
+    return out;
+  }
+
+  private evaluationsBetween(start: number, end: number): DemoEvaluation[] {
+    const nowDay = Math.floor(this.now().getTime() / DAY);
+    const out: DemoEvaluation[] = [];
+    for (let day = Math.floor(start / DAY); day <= Math.floor((end - 1) / DAY); day++) {
+      if (day < nowDay - HISTORY_DAYS || day > nowDay) continue;
+      for (const e of this.qualityDay(day)) if (e.conversation.start >= start && e.conversation.start < end) out.push(e);
+    }
+    return out;
+  }
+
+  private evaluationEntity(e: DemoEvaluation, now: number) {
+    const c = e.conversation;
+    const agent = this.agents.find((a) => a.id === c.agentId)!;
+    const queue = this.queues.find((q) => q.id === c.queueId)!;
+    const finished = e.releaseAt <= now;
+    return {
+      id: e.id,
+      conversation: { id: c.id },
+      evaluationForm: this.forms.find((f) => f.id === e.formId),
+      evaluator: this.supervisors.find((x) => x.id === e.evaluatorId),
+      agent: { id: agent.id, name: agent.name },
+      queue: { id: queue.id, name: queue.name },
+      status: finished ? 'FINISHED' : 'INPROGRESS',
+      conversationDate: new Date(c.start).toISOString(),
+      assignedDate: new Date(c.endAt + 3_600_000).toISOString(),
+      ...(finished
+        ? {
+            releaseDate: new Date(e.releaseAt).toISOString(),
+            agentHasRead: e.read,
+            answers: { totalScore: e.score, totalCriticalScore: e.criticalScore, totalNonCriticalScore: e.score, anyFailedKillQuestions: e.failed },
+          }
+        : {}),
+    };
+  }
+
+  private evaluationsQuery(q: RequestOptions['query'] & object) {
+    const now = this.now().getTime();
+    const start = q.startTime ? Date.parse(String(q.startTime)) : now - 7 * DAY;
+    const end = q.endTime ? Date.parse(String(q.endTime)) : now;
+    const list = this.evaluationsBetween(start, Math.min(end, now))
+      .filter((e) => !q.agentUserId || e.conversation.agentId === q.agentUserId)
+      .filter((e) => !q.evaluatorUserId || e.evaluatorId === q.evaluatorUserId)
+      .filter((e) => !q.queueId || e.conversation.queueId === q.queueId)
+      .sort((a, b) => b.conversation.start - a.conversation.start)
+      .map((e) => this.evaluationEntity(e, now));
+    return page(list, q);
+  }
+
+  private evaluationAggregates(body: Record<string, unknown>) {
+    const interval = parseInterval(body.interval);
+    const now = this.now().getTime();
+    const dims = (e: DemoEvaluation) => ({ userId: e.conversation.agentId, evaluatorId: e.evaluatorId, queueId: e.conversation.queueId, evaluationFormId: e.formId, mediaType: e.conversation.mediaType });
+    const items = this.evaluationsBetween(interval.start, Math.min(interval.end, now)).filter((e) => e.releaseAt <= now && matches(body.filter, dims(e)));
+    return groupedAggregate(interval, body, items, dims, (name, list) => {
+      const stats = (f: (e: DemoEvaluation) => number) => ({ count: list.length, sum: list.reduce((n, e) => n + f(e), 0), max: Math.max(...list.map(f)), min: Math.min(...list.map(f)) });
+      if (name === 'nEvaluations') return { count: list.length };
+      if (name === 'oTotalScore') return stats((e) => e.score);
+      if (name === 'oTotalCriticalScore') return stats((e) => e.criticalScore);
+      return undefined;
+    });
+  }
+
+  // ---- surveys ---------------------------------------------------------------------------
+
+  /** About 30% of handled inbound interactions get a survey and about a third of those answer it. */
+  private surveyFor(c: DemoConversation, now: number): DemoSurvey | undefined {
+    if (!c.agentId || c.endAt > now || c.direction !== 'inbound' || hash(`sv:${c.id}`) % 100 >= 30) return undefined;
+    const sentAt = c.endAt + 2 * 60_000;
+    if (sentAt > now) return undefined;
+    const h = (k: string) => hash(`${k}:${c.id}`);
+    const waited = (c.answeredAt ?? c.start) - c.start;
+    const nps = Math.max(0, Math.min(10, Math.round((agentQuality(c.agentId) - 50) / 4 + (h('svn') % 7) - 3 - (waited > 120_000 ? 2 : 0) - (c.holdMs > 60_000 ? 1 : 0))));
+    const comments = COMMENTS[nps >= 9 ? 'promoter' : nps >= 7 ? 'passive' : 'detractor'];
+    return {
+      id: uuid(random(h('svid'))),
+      sentAt,
+      responded: h('svr') % 100 < 35,
+      completedAt: c.endAt + (10 + (h('svt') % 300)) * 60_000,
+      nps,
+      score: Math.max(0, Math.min(100, nps * 10 + (h('svs') % 11) - 5)),
+      comment: h('svc') % 100 < 45 ? comments[h('svw') % comments.length] : undefined,
+    };
+  }
+
+  private detailSurveys(c: DemoConversation, now: number) {
+    const survey = this.surveyFor(c, now);
+    if (!survey) return {};
+    const done = survey.responded && survey.completedAt <= now;
+    return {
+      surveys: [
+        {
+          surveyId: survey.id,
+          surveyFormName: 'Customer satisfaction',
+          surveyStatus: done ? 'Finished' : 'Sent',
+          queueId: c.queueId,
+          userId: c.agentId,
+          ...(done ? { surveyPromoterScore: survey.nps, oSurveyTotalScore: survey.score, surveyCompletedDate: new Date(survey.completedAt).toISOString() } : {}),
+        },
+      ],
+    };
+  }
+
+  private conversationSurveys(id: string) {
+    const c = this.byId.get(id);
+    if (!c) throw new PlatformError(`Conversation ${id} not found.`, 404);
+    const now = this.now().getTime();
+    const survey = this.surveyFor(c, now);
+    if (!survey) return [];
+    const done = survey.responded && survey.completedAt <= now;
+    const agent = this.agents.find((a) => a.id === c.agentId)!;
+    const queue = this.queues.find((q) => q.id === c.queueId)!;
+    return [
+      {
+        id: survey.id,
+        conversation: { id: c.id },
+        surveyForm: { id: 'csat-form', name: 'Customer satisfaction' },
+        agent: { id: agent.id, name: agent.name },
+        queue: { id: queue.id, name: queue.name },
+        status: done ? 'Finished' : 'Sent',
+        ...(done
+          ? {
+              completedDate: new Date(survey.completedAt).toISOString(),
+              answers: {
+                totalScore: survey.score,
+                questionGroupScores: [
+                  {
+                    questionGroupId: 'main',
+                    questionScores: [
+                      { questionId: 'nps', score: survey.nps, npsScore: survey.nps },
+                      { questionId: 'satisfaction', score: survey.score },
+                      ...(survey.comment ? [{ questionId: 'comment', freeTextAnswer: survey.comment }] : []),
+                    ],
+                  },
+                ],
+              },
+            }
+          : {}),
+      },
+    ];
+  }
+
+  private surveyAggregates(body: Record<string, unknown>) {
+    const interval = parseInterval(body.interval);
+    const now = this.now().getTime();
+    type Item = { c: DemoConversation; s: DemoSurvey; done: boolean };
+    const dims = (x: Item) => ({ queueId: x.c.queueId, userId: x.c.agentId, mediaType: x.c.mediaType, surveyFormName: 'Customer satisfaction' });
+    const items: Item[] = [];
+    for (const c of this.conversationsBetween(interval.start - DAY, Math.min(interval.end, now))) {
+      const sv = this.surveyFor(c, now);
+      if (!sv || sv.sentAt < interval.start || sv.sentAt >= interval.end) continue;
+      const item = { c, s: sv, done: sv.responded && sv.completedAt <= now };
+      if (matches(body.filter, dims(item))) items.push(item);
+    }
+    return groupedAggregate(interval, body, items, dims, (name, list) => {
+      const done = list.filter((x) => x.done);
+      const count = (n: number) => (n ? { count: n } : undefined);
+      switch (name) {
+        case 'nSurveysSent':
+          return count(list.length);
+        case 'nSurveyResponses':
+        case 'nSurveyNpsResponses':
+          return count(done.length);
+        case 'nSurveyNpsPromoters':
+          return count(done.filter((x) => x.s.nps >= 9).length);
+        case 'nSurveyNpsDetractors':
+          return count(done.filter((x) => x.s.nps <= 6).length);
+        case 'oSurveyTotalScore':
+          return done.length ? { count: done.length, sum: done.reduce((n, x) => n + x.s.score, 0) } : undefined;
+        default:
+          return undefined;
+      }
+    });
+  }
+
+  // ---- outbound --------------------------------------------------------------------------
+
+  private campaignEntity(c: DemoCampaign) {
+    const queue = c.queueId ? this.queues.find((q) => q.id === c.queueId) : undefined;
+    return {
+      id: c.id,
+      name: c.name,
+      campaignStatus: c.status,
+      dialingMode: c.dialingMode,
+      contactList: { id: c.contactListId, name: c.contactList },
+      ...(queue ? { queue: { id: queue.id, name: queue.name } } : {}),
+      callerName: 'Demo Contact Center',
+      callerAddress: '+18005550199',
+      ...(c.dialingMode === 'progressive' ? { abandonRate: 3 } : {}),
+      dateCreated: `${c.startDate}T12:00:00.000Z`,
+    };
+  }
+
+  /** Outbound calls an agent took for this campaign since it started. Each one took one to four dialing attempts. */
+  private campaignCalls(c: DemoCampaign, from: number, until: number) {
+    return this.conversationsBetween(Math.max(from, Date.parse(`${c.startDate}T00:00:00Z`)), until).filter((x) => x.campaign === c.name);
+  }
+
+  private campaignProgress(c: DemoCampaign) {
+    const now = this.now().getTime();
+    const called = c.status === 'complete' ? c.totalContacts : Math.min(c.totalContacts, c.calledBefore + this.campaignCalls(c, 0, now).reduce((n, x) => n + attempts(x), 0));
+    return { campaign: { id: c.id, name: c.name }, numberOfContactsCalled: called, totalNumberOfContacts: c.totalContacts, percentage: Math.round((called / c.totalContacts) * 100) };
+  }
+
+  private campaignStats(c: DemoCampaign) {
+    const now = this.now().getTime();
+    if (c.status !== 'on') return { contactRate: { attempts: 0, connects: 0, connectRatio: 0 }, idleAgents: 0, effectiveIdleAgents: 0, outstandingCalls: 0, scheduledCalls: 0 };
+    const today = this.campaignCalls(c, startOfLocalDay(now), now);
+    const tries = today.reduce((n, x) => n + attempts(x), 0);
+    const idle = this.agents.filter((a) => a.queueIds.includes(c.queueId!) && this.agentState(a).routing === 'IDLE').length;
+    return {
+      contactRate: { attempts: tries, connects: today.length, connectRatio: tries ? Math.round((today.length / tries) * 1000) / 1000 : 0 },
+      idleAgents: idle,
+      effectiveIdleAgents: idle,
+      adjustedCallsPerAgent: c.dialingMode === 'preview' ? 1 : 1.5,
+      outstandingCalls: isOpen(now) ? hash(`${c.id}:${Math.floor(now / 60_000)}`) % 3 : 0,
+      scheduledCalls: 4 + (hash(`${c.id}:${localDayOf(now)}`) % 20),
+    };
+  }
+
+  // ---- workforce management --------------------------------------------------------------
+
+  private agentSchedules(body: Record<string, unknown>) {
+    const start = Date.parse(String(body.startDate));
+    const end = Date.parse(String(body.endDate));
+    if (Number.isNaN(start) || Number.isNaN(end)) throw new PlatformError('startDate and endDate are required.', 400);
+    if (end - start > 32 * DAY) throw new PlatformError('The schedule search covers at most 32 days.', 400);
+    const ids = (body.userIds as string[] | undefined) ?? this.agents.map((a) => a.id);
+    const iso = (t: number) => new Date(t).toISOString();
+    return {
+      status: 'Complete',
+      result: {
+        businessUnitTimeZone: 'America/Bogota',
+        agentSchedules: this.agents
+          .filter((a) => ids.includes(a.id))
+          .map((a) => {
+            const shifts: DemoShift[] = [];
+            for (let day = localDayOf(start) - 1; day <= localDayOf(end); day++) {
+              const shift = scheduledShift(a, day);
+              if (shift && shift.start >= start && shift.start < end) shifts.push(shift);
+            }
+            return {
+              user: { id: a.id },
+              shifts: shifts.map((sh) => ({
+                id: `${a.id}-${sh.start}`,
+                startDate: iso(sh.start),
+                lengthMinutes: Math.round((sh.end - sh.start) / 60_000),
+                activities: sh.activities.map((act) => ({
+                  activityCodeId: this.wfm.codes[act.category],
+                  startDate: iso(act.start),
+                  lengthMinutes: Math.round((act.end - act.start) / 60_000),
+                  description: act.name,
+                  paid: act.category !== 'Meal',
+                })),
+              })),
+              fullDayTimeOffMarkers: [],
+            };
+          }),
+      },
+    };
+  }
+
+  /** Real-time adherence: the scheduled activity now against what the agent is doing. */
+  private adherence(q: RequestOptions['query'] & object) {
+    const now = this.now().getTime();
+    const raw = q.userId;
+    const ids = (Array.isArray(raw) ? raw : raw !== undefined ? [raw] : []).map(String);
+    const convs = this.conversationsAround(now);
+    return this.agents
+      .filter((a) => ids.includes(a.id))
+      .map((a) => {
+        const mine = convs.filter((c) => c.agentId === a.id);
+        const at = (t: number) => {
+          const shift = scheduledShift(a, localDayOf(t));
+          const scheduled = shift && t >= shift.start && t < shift.end ? shift.activities.find((x) => t >= x.start && t < x.end)!.category : 'Unscheduled';
+          const state = stateAt(a, t, mine);
+          const actual = ACTUAL_CATEGORY[state.presence] ?? 'Unavailable';
+          const inAdherence = scheduled === actual || (scheduled === 'Unscheduled' && state.presence === 'Offline');
+          return { scheduled, actual, state, inAdherence };
+        };
+        const current = at(now);
+        let since = now;
+        for (let t = now - 60_000; t > now - 12 * 3_600_000; t -= 60_000) {
+          const before = at(t);
+          // Count from the login, not from the night before.
+          if (before.inAdherence !== current.inAdherence || (before.state.presence === 'Offline') !== (current.state.presence === 'Offline')) break;
+          since = t;
+        }
+        return {
+          user: { id: a.id },
+          managementUnitId: this.wfm.managementUnitId,
+          scheduledActivityCategory: current.scheduled,
+          actualActivityCategory: current.actual,
+          systemPresence: current.state.presence.toUpperCase().replace(' ', '_'),
+          routingStatus: current.state.routing,
+          isOutOfOffice: false,
+          adherenceState: current.inAdherence ? 'InAdherence' : 'OutOfAdherence',
+          impact: current.inAdherence ? 'Neutral' : current.scheduled === 'OnQueueWork' ? 'Negative' : current.actual === 'OnQueueWork' ? 'Positive' : 'Neutral',
+          timeOfAdherenceChange: new Date(since).toISOString(),
+        };
+      });
+  }
+
   private conversation(id: string) {
     const c = this.byId.get(id);
     if (!c) throw new PlatformError(`Conversation ${id} not found.`, 404);
@@ -489,6 +871,7 @@ export class DemoPlatformClient implements PlatformClient {
       originatingDirection: c.direction,
       wrapUpCode: c.wrapupId,
       conversationId: c.id,
+      outboundCampaignId: c.campaign ? this.campaigns.find((x) => x.name === c.campaign)!.id : undefined,
     };
   }
 
@@ -498,7 +881,7 @@ export class DemoPlatformClient implements PlatformClient {
     const queue = this.queues.find((q) => q.id === c.queueId)!;
     const agent = c.agentId ? this.agents.find((a) => a.id === c.agentId) : undefined;
     const ended = c.endAt <= now;
-    const leftQueue = c.answeredAt ?? c.abandonedAt ?? c.start;
+    const leftQueue = c.answeredAt ?? c.abandonedAt ?? c.flowOutAt ?? Infinity;
     const dnis = queue.mediaType === 'voice' ? `tel:${queue.number}` : queue.address;
     const ani = queue.mediaType === 'voice' ? `tel:${c.ani}` : c.email;
     const customerEnd = ended ? c.endAt : undefined;
@@ -529,8 +912,9 @@ export class DemoPlatformClient implements PlatformClient {
           {
             mediaType: c.mediaType,
             direction: 'inbound',
-            segments: [{ segmentStart: iso(c.start), ...(leftQueue <= now ? { segmentEnd: iso(Math.min(leftQueue, now)) } : {}), segmentType: 'interact', queueId: queue.id, ...(c.abandonedAt !== undefined ? { disconnectType: 'peer' } : {}) }],
+            segments: [{ segmentStart: iso(c.start), ...(leftQueue <= now ? { segmentEnd: iso(Math.min(leftQueue, now)) } : {}), segmentType: 'interact', queueId: queue.id, ...(c.abandonedAt !== undefined ? { disconnectType: 'peer' } : c.flowOutAt !== undefined ? { disconnectType: 'transfer' } : {}) }],
             metrics: [
+              ...(c.flowOutAt !== undefined && c.flowOutAt <= now ? [{ name: 'tFlowOut', value: c.flowOutAt - c.start }] : []),
               ...(c.abandonedAt !== undefined && c.abandonedAt <= now ? [{ name: 'tAbandon', value: c.abandonedAt - c.start }] : []),
               ...(c.answeredAt !== undefined && c.answeredAt <= now ? [{ name: 'tAcd', value: c.answeredAt - c.start }] : []),
             ],
@@ -583,6 +967,7 @@ export class DemoPlatformClient implements PlatformClient {
       originatingDirection: c.direction,
       divisionIds: ['demo-division'],
       participants,
+      ...this.detailSurveys(c, now),
     };
   }
 
@@ -610,7 +995,7 @@ export class DemoPlatformClient implements PlatformClient {
     const dayStart = day * DAY;
     const weekday = new Date(dayStart + 12 * 3_600_000).getUTCDay();
     const weekend = weekday === 0 || weekday === 6;
-    const arrivals: { queue: DemoQueue; start: number; outbound: boolean }[] = [];
+    const arrivals: { queue: DemoQueue; start: number; outbound: boolean; callbackOf?: DemoConversation }[] = [];
 
     for (const queue of this.queues) {
       for (let h = 0; h < 24; h++) {
@@ -628,18 +1013,24 @@ export class DemoPlatformClient implements PlatformClient {
 
     const busyUntil = new Map<string, number>();
     const result: DemoConversation[] = [];
-    for (const { queue, start, outbound } of arrivals) {
-      const patience = expo(queue.patienceSec * 1000, rng);
+    for (let n = 0; n < arrivals.length; n++) {
+      const { queue, start, outbound, callbackOf } = arrivals[n]!;
+      // A callback waits until an agent takes it; callers on hold give up after a while.
+      const patience = callbackOf ? Infinity : expo(queue.patienceSec * 1000, rng);
       const members = this.agents.filter((a) => a.queueIds.includes(queue.id));
       let pick: DemoAgent | undefined;
       let answeredAt = Infinity;
       for (const a of members) {
         const free = Math.max(busyUntil.get(a.id) ?? 0, start);
         if (!onShift(a, free)) continue;
-        // Lunch, and a 15-minute break or meeting now and then, delay the next answer.
+        // Breaks, lunch and other off-queue time delay the next answer.
         let pause = free;
-        for (let i = 0; i < 8 && offQueueAt(a, pause); i++) pause = (Math.floor(pause / 900_000) + 1) * 900_000;
-        const t = onShift(a, pause) && !offQueueAt(a, pause) ? pause : Infinity;
+        for (let i = 0; i < 8; i++) {
+          const off = offQueueUntil(a, pause);
+          if (!off) break;
+          pause = off.until;
+        }
+        const t = onShift(a, pause) && !offQueueUntil(a, pause) ? pause : Infinity;
         if (t < answeredAt) {
           answeredAt = t;
           pick = a;
@@ -647,17 +1038,31 @@ export class DemoPlatformClient implements PlatformClient {
       }
       const wait = outbound ? 0 : answeredAt - start;
       const id = uuid(rng);
-      const customer = customerName(rng);
+      const customer = callbackOf?.customerName ?? customerName(rng);
       const base = {
         id,
         queueId: queue.id,
-        mediaType: queue.mediaType,
+        mediaType: callbackOf ? 'callback' : queue.mediaType,
         direction: (outbound ? 'outbound' : 'inbound') as 'inbound' | 'outbound',
         start,
-        ani: phone(rng),
+        ani: callbackOf?.ani ?? phone(rng),
         email: `${customer.toLowerCase().replace(/[^a-z]+/g, '.')}@example.net`,
         customerName: customer,
+        ...(callbackOf ? { callbackOf: callbackOf.id } : {}),
+        ...(outbound && queue.campaign ? { campaign: queue.campaign } : {}),
       };
+
+      // In queues that offer it, some callers who would hang up ask for a callback instead,
+      // as long as the center stays open long enough to call them back.
+      const giveUpAt = start + Math.round(Math.min(patience, 20 * 60_000));
+      if (!outbound && !callbackOf && wait > patience && queue.callbackShare && isOpen(giveUpAt + 3_600_000) && hash(`cb:${id}`) % 1000 < queue.callbackShare * 1000) {
+        const original: DemoConversation = { ...base, flowOutAt: giveUpAt, talkMs: 0, holdMs: 0, acwMs: 0, endAt: giveUpAt, disconnectedBy: 'customer', transferred: false };
+        result.push(original);
+        let at = n + 1;
+        while (at < arrivals.length && arrivals[at]!.start <= giveUpAt) at++;
+        arrivals.splice(at, 0, { queue, start: giveUpAt, outbound: false, callbackOf: original });
+        continue;
+      }
 
       if (!pick || (!outbound && wait > patience)) {
         const abandonedAt = start + Math.round(Math.min(patience, 20 * 60_000));
@@ -679,7 +1084,10 @@ export class DemoPlatformClient implements PlatformClient {
         holdMs,
         acwMs,
         endAt,
-        wrapupId: this.wrapupId(queue.wrapups[Math.floor(rng() ** 1.6 * queue.wrapups.length)]!),
+        wrapupId: (() => {
+          const list = outbound && queue.campaign ? CAMPAIGN_WRAPUPS[queue.campaign]! : queue.wrapups;
+          return this.wrapupId(list[Math.floor(rng() ** 1.6 * list.length)]!);
+        })(),
         disconnectedBy: rng() < 0.6 ? 'customer' : 'agent',
         transferred: rng() < 0.05,
       });
@@ -706,6 +1114,10 @@ interface DemoQueue {
   outboundShare: number;
   weekendFactor: number;
   wrapups: string[];
+  /** Share of callers who would hang up that accept a callback instead. */
+  callbackShare?: number;
+  /** Outbound campaign that dials for this queue. */
+  campaign?: string;
 }
 
 interface DemoFlow {
@@ -729,6 +1141,43 @@ interface DemoFlowSession {
   ms: number;
   outcome: 'queue' | 'self-service' | 'hung-up' | 'closed';
   failedOutcome: boolean;
+}
+
+interface DemoCampaign {
+  id: string;
+  name: string;
+  queue?: string;
+  queueId?: string;
+  dialingMode: 'preview' | 'progressive' | 'predictive' | 'agentless';
+  status: 'on' | 'off' | 'complete';
+  contactList: string;
+  contactListId: string;
+  totalContacts: number;
+  /** Contacts dialed before the demo history starts. */
+  calledBefore: number;
+  startDate: string;
+}
+
+interface DemoEvaluation {
+  id: string;
+  conversation: DemoConversation;
+  evaluatorId: string;
+  formId: string;
+  releaseAt: number;
+  score: number;
+  criticalScore: number;
+  failed: boolean;
+  read: boolean;
+}
+
+interface DemoSurvey {
+  id: string;
+  sentAt: number;
+  responded: boolean;
+  completedAt: number;
+  nps: number;
+  score: number;
+  comment?: string;
 }
 
 interface DemoSchedule {
@@ -768,6 +1217,12 @@ interface DemoConversation {
   customerName: string;
   disconnectedBy: 'customer' | 'agent';
   transferred: boolean;
+  /** Set when the caller left the queue for a callback. */
+  flowOutAt?: number;
+  /** For a callback: the conversation that requested it. */
+  callbackOf?: string;
+  /** For an outbound call: the campaign name. */
+  campaign?: string;
 }
 
 const DAY = 86_400_000;
@@ -777,11 +1232,11 @@ const SL_TARGET_MS = 20_000;
 const DEMO_UTC_OFFSET = -5;
 
 const QUEUES: Omit<DemoQueue, 'id'>[] = [
-  { name: 'Support', description: 'General product support', mediaType: 'voice', number: '+18005550100', peakPerHour: 46, ahtSec: 330, patienceSec: 150, outboundShare: 0, weekendFactor: 0.45, wrapups: ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Wrong department'] },
-  { name: 'Billing', description: 'Invoices, payments and refunds', mediaType: 'voice', number: '+18005550101', peakPerHour: 24, ahtSec: 270, patienceSec: 120, outboundShare: 0, weekendFactor: 0.3, wrapups: ['Payment taken', 'Resolved', 'Information provided', 'Refund issued', 'Follow-up needed', 'Wrong department'] },
-  { name: 'Sales', description: 'New customers and upgrades', mediaType: 'voice', number: '+18005550102', peakPerHour: 16, ahtSec: 420, patienceSec: 160, outboundShare: 0.2, weekendFactor: 0.5, wrapups: ['Information provided', 'Sale completed', 'Follow-up needed', 'Wrong department'] },
-  { name: 'Retention', description: 'Cancellation requests', mediaType: 'voice', number: '+18005550103', peakPerHour: 8, ahtSec: 540, patienceSec: 260, outboundShare: 0.1, weekendFactor: 0.4, wrapups: ['Cancellation saved', 'Cancelled', 'Follow-up needed', 'Information provided'] },
-  { name: 'Spanish Support', description: 'Support in Spanish', mediaType: 'voice', number: '+18005550104', peakPerHour: 15, ahtSec: 360, patienceSec: 160, outboundShare: 0, weekendFactor: 0.5, wrapups: ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Wrong department'] },
+  { name: 'Support', description: 'General product support', mediaType: 'voice', number: '+18005550100', peakPerHour: 46, ahtSec: 330, patienceSec: 150, outboundShare: 0, weekendFactor: 0.45, wrapups: ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Wrong department'], callbackShare: 0.35 },
+  { name: 'Billing', description: 'Invoices, payments and refunds', mediaType: 'voice', number: '+18005550101', peakPerHour: 24, ahtSec: 270, patienceSec: 120, outboundShare: 0, weekendFactor: 0.3, wrapups: ['Payment taken', 'Resolved', 'Information provided', 'Refund issued', 'Follow-up needed', 'Wrong department'], callbackShare: 0.35 },
+  { name: 'Sales', description: 'New customers and upgrades', mediaType: 'voice', number: '+18005550102', peakPerHour: 16, ahtSec: 420, patienceSec: 160, outboundShare: 0.2, weekendFactor: 0.5, wrapups: ['Information provided', 'Sale completed', 'Follow-up needed', 'Wrong department'], campaign: 'Upgrade offers' },
+  { name: 'Retention', description: 'Cancellation requests', mediaType: 'voice', number: '+18005550103', peakPerHour: 8, ahtSec: 540, patienceSec: 260, outboundShare: 0.1, weekendFactor: 0.4, wrapups: ['Cancellation saved', 'Cancelled', 'Follow-up needed', 'Information provided'], campaign: 'Win-back' },
+  { name: 'Spanish Support', description: 'Support in Spanish', mediaType: 'voice', number: '+18005550104', peakPerHour: 15, ahtSec: 360, patienceSec: 160, outboundShare: 0, weekendFactor: 0.5, wrapups: ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Wrong department'], callbackShare: 0.3 },
   { name: 'Chat Support', description: 'Web chat support', mediaType: 'chat', address: 'web-chat', peakPerHour: 22, ahtSec: 560, patienceSec: 240, outboundShare: 0, weekendFactor: 0.6, wrapups: ['Resolved', 'Information provided', 'Escalated', 'Follow-up needed'] },
 ];
 
@@ -838,6 +1293,35 @@ const HOLIDAYS: [string, string][] = [
   ['2027-01-01', "New Year's Day"],
 ];
 
+const SUPERVISORS = ['Laura Benítez', 'Marco Silva'];
+
+const CAMPAIGNS: Omit<DemoCampaign, 'id' | 'contactListId' | 'queueId'>[] = [
+  { name: 'Upgrade offers', queue: 'Sales', dialingMode: 'progressive', status: 'on', contactList: 'Upgrade candidates Q4', totalContacts: 4200, calledBefore: 0, startDate: '2026-10-01' },
+  { name: 'Win-back', queue: 'Retention', dialingMode: 'preview', status: 'on', contactList: 'Cancelled in the last 90 days', totalContacts: 1300, calledBefore: 260, startDate: '2026-09-07' },
+  { name: 'Payment reminders', dialingMode: 'agentless', status: 'complete', contactList: 'Overdue invoices, September', totalContacts: 2500, calledBefore: 2500, startDate: '2026-09-15' },
+];
+
+/** Wrap-up codes agents use on outbound campaign calls. */
+const CAMPAIGN_WRAPUPS: Record<string, string[]> = {
+  'Upgrade offers': ['Not interested', 'Sale completed', 'Call back later', 'Information provided'],
+  'Win-back': ['Not interested', 'Customer won back', 'Call back later'],
+};
+
+const ACTIVITY_NAMES: Record<ActivityCategory, string> = { OnQueueWork: 'On queue', Break: 'Break', Meal: 'Lunch', Meeting: 'Meeting', Training: 'Training' };
+const ACTUAL_CATEGORY: Record<string, string> = { 'On Queue': 'OnQueueWork', Break: 'Break', Meal: 'Meal', Meeting: 'Meeting', Training: 'Training', Away: 'Unavailable', Offline: 'Unavailable' };
+
+const COMMENTS: Record<'promoter' | 'passive' | 'detractor', string[]> = {
+  promoter: ['Quick and friendly, solved it on the first call.', 'The agent knew exactly what to do.', 'Very clear explanation of my bill.', 'Great service, thank you.'],
+  passive: ['Fine, but I had to wait a while.', 'Solved, although I was transferred once.', 'OK. The hold was too long.'],
+  detractor: [
+    'I waited too long and the problem is still not fixed.',
+    'Nobody called me back as promised. My number is 555-201-8890.',
+    'I had to explain everything twice.',
+    'Please write to me at maria.lopez@example.net, I still have no answer.',
+    'The agent was polite but could not help.',
+  ],
+};
+
 const WRAPUPS = ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Payment taken', 'Refund issued', 'Sale completed', 'Cancellation saved', 'Cancelled', 'Wrong department'];
 
 const FIRST = ['Alex', 'Maria', 'John', 'Laura', 'Carlos', 'Sophie', 'David', 'Lucia', 'Mark', 'Elena', 'Peter', 'Julia', 'Diego', 'Nina', 'Oscar', 'Paula'];
@@ -864,37 +1348,146 @@ function nextDate(date: string): string {
 function stateAt(a: DemoAgent, t: number, convs: DemoConversation[]): { presence: string; routing: string } {
   if (!onShift(a, t)) return { presence: 'Offline', routing: 'OFF_QUEUE' };
   if (convs.some((c) => c.agentId === a.id && c.answeredAt! <= t && t < c.endAt)) return { presence: 'On Queue', routing: 'INTERACTING' };
-  const off = offQueueAt(a, t);
-  return off ? { presence: off, routing: 'OFF_QUEUE' } : { presence: 'On Queue', routing: 'IDLE' };
+  const off = offQueueUntil(a, t);
+  return off ? { presence: off.presence, routing: 'OFF_QUEUE' } : { presence: 'On Queue', routing: 'IDLE' };
 }
 
-/** The off-queue presence of an agent on shift at time t, if any. */
-function offQueueAt(a: DemoAgent, t: number): string | undefined {
-  const localMs = t + DEMO_UTC_OFFSET * 3_600_000;
-  const local = (localMs / 3_600_000) % 24;
-  const weekday = new Date(localMs).getUTCDay();
-  // Half an hour for lunch, four hours into the shift.
-  const meal = weekday === 0 || weekday === 6 ? 13 : a.shiftStart + 4;
-  if (local >= meal && local < meal + 0.5) return 'Meal';
-  // On shift while the center is closed only happens during the team meeting.
-  if (!isOpen(t)) return 'Meeting';
-  // Other activities change every 15 minutes, deterministically per agent.
-  const r = random(hash(`${a.id}:${Math.floor(t / 900_000)}`))();
-  if (r < 0.05) return 'Break';
-  if (r < 0.08) return 'Meeting';
-  if (r < 0.1) return 'Away';
+type ActivityCategory = 'OnQueueWork' | 'Break' | 'Meal' | 'Meeting' | 'Training';
+
+interface DemoShift {
+  start: number;
+  end: number;
+  activities: { start: number; end: number; category: ActivityCategory; name: string }[];
+}
+
+const localDayOf = (t: number) => Math.floor((t + DEMO_UTC_OFFSET * 3_600_000) / DAY);
+/** UTC instant of a local hour on a local day. */
+const localTime = (day: number, hour: number) => day * DAY + (hour - DEMO_UTC_OFFSET) * 3_600_000;
+
+/**
+ * The published schedule of an agent for one local day: a nine-hour shift on weekdays (eight on
+ * weekends, which half the team works), two breaks, lunch, training on Thursdays for a third of the
+ * team, and the quarterly team meeting. Nothing on holidays.
+ */
+function scheduledShift(a: DemoAgent, day: number): DemoShift | undefined {
+  const date = new Date(day * DAY).toISOString().slice(0, 10);
+  if (HOLIDAYS.some(([d]) => d === date)) return undefined;
+  const weekday = new Date(day * DAY).getUTCDay();
+  const weekend = weekday === 0 || weekday === 6;
+  if (weekend && hash(a.id) % 2 === 0) return undefined;
+  const startHour = weekend ? 9 : a.shiftStart;
+  const hours = weekend ? 8 : 9;
+  const start = localTime(day, startHour);
+  const end = start + hours * 3_600_000;
+  const at = (h: number) => start + h * 3_600_000;
+  const off: DemoShift['activities'] = [
+    { start: at(2), end: at(2.25), category: 'Break', name: 'Break' },
+    { start: at(4), end: at(4.5), category: 'Meal', name: 'Lunch' },
+    { start: at(hours - 2.5), end: at(hours - 2.25), category: 'Break', name: 'Break' },
+  ];
+  if (!weekend && weekday === 4 && hash(a.id) % 3 === 0) off.push({ start: at(5), end: at(6), category: 'Training', name: 'Product training' });
+  if (date === '2026-11-27') off.push({ start: Math.max(start, localTime(day, 8)), end: localTime(day, 9.5), category: 'Meeting', name: 'Quarterly team meeting' });
+  off.sort((x, y) => x.start - y.start);
+  const activities: DemoShift['activities'] = [];
+  let t = start;
+  for (const o of off) {
+    if (o.end <= t) continue;
+    if (o.start > t) activities.push({ start: t, end: o.start, category: 'OnQueueWork', name: 'On queue' });
+    activities.push({ ...o, start: Math.max(o.start, t) });
+    t = o.end;
+  }
+  if (t < end) activities.push({ start: t, end, category: 'OnQueueWork', name: 'On queue' });
+  return { start, end, activities };
+}
+
+/** How the agent actually follows the schedule: some log in late or leave early, and some breaks run over. */
+function deviation(a: DemoAgent, day: number) {
+  const h = (k: string) => hash(`${a.id}:${day}:${k}`);
+  return {
+    lateMs: h('late') % 100 < 18 ? (3 + (h('late-min') % 12)) * 60_000 : 0,
+    earlyMs: h('early') % 100 < 8 ? (5 + (h('early-min') % 15)) * 60_000 : 0,
+    overrunMs: (i: number) => (h(`over:${i}`) % 100 < 25 ? (2 + (h(`over-min:${i}`) % 9)) * 60_000 : 0),
+  };
+}
+
+const PRESENCE: Record<ActivityCategory, string> = { OnQueueWork: 'On Queue', Break: 'Break', Meal: 'Meal', Meeting: 'Meeting', Training: 'Training' };
+
+/** The off-queue presence of an agent at time t and when it ends, if the agent is off queue. */
+function offQueueUntil(a: DemoAgent, t: number): { presence: string; until: number } | undefined {
+  const day = localDayOf(t);
+  const shift = scheduledShift(a, day);
+  if (!shift) return undefined;
+  const dev = deviation(a, day);
+  let i = 0;
+  for (const act of shift.activities) {
+    if (act.category === 'OnQueueWork') continue;
+    const until = Math.min(act.end + dev.overrunMs(i++), shift.end);
+    if (t >= act.start && t < until) return { presence: PRESENCE[act.category], until };
+  }
+  // Now and then an agent steps away for a few minutes.
+  const slot = Math.floor(t / 900_000) * 900_000;
+  const r = random(hash(`${a.id}:${slot / 900_000}`))();
+  if (r < 0.025) {
+    const until = slot + (5 + (Math.floor(r * 10_000) % 10)) * 60_000;
+    if (t < until) return { presence: 'Away', until };
+  }
   return undefined;
 }
 
 function onShift(a: DemoAgent, t: number): boolean {
-  const local = ((t / 3_600_000 + DEMO_UTC_OFFSET) % 24 + 24) % 24;
-  const localDate = new Date(t + DEMO_UTC_OFFSET * 3_600_000);
-  if (HOLIDAYS.some(([d]) => d === localDate.toISOString().slice(0, 10))) return false;
-  const weekday = localDate.getUTCDay();
-  const weekend = weekday === 0 || weekday === 6;
-  // Half the team works weekends.
-  if (weekend) return hash(a.id) % 2 === 1 && local >= 9 && local < 17;
-  return local >= a.shiftStart && local < a.shiftStart + 9;
+  const day = localDayOf(t);
+  const shift = scheduledShift(a, day);
+  if (!shift) return false;
+  const dev = deviation(a, day);
+  return t >= shift.start + dev.lateMs && t < shift.end - dev.earlyMs;
+}
+
+/** A fixed quality level per agent, between 72 and 93, that drives evaluation scores and survey answers. */
+function agentQuality(agentId: string): number {
+  return 72 + (hash(`quality:${agentId}`) % 22);
+}
+
+function attempts(c: DemoConversation): number {
+  return 1 + (hash(`attempts:${c.id}`) % 4);
+}
+
+function startOfLocalDay(t: number): number {
+  return localTime(localDayOf(t), 0);
+}
+
+/** Groups items by the requested dimensions and computes metrics per group, in the shape of the analytics aggregates. */
+function groupedAggregate<I>(
+  interval: { start: number; end: number },
+  body: Record<string, unknown>,
+  items: I[],
+  dims: (item: I) => Record<string, string | undefined>,
+  metric: (name: string, list: I[]) => Record<string, number> | undefined,
+) {
+  const groupBy = (body.groupBy as string[] | undefined) ?? [];
+  const metrics = (body.metrics as string[] | undefined) ?? [];
+  const groups = new Map<string, { group: Record<string, string>; items: I[] }>();
+  for (const item of items) {
+    const d = dims(item);
+    const group = Object.fromEntries(groupBy.map((g) => [g, d[g] ?? '']));
+    const key = JSON.stringify(group);
+    const entry = groups.get(key) ?? { group, items: [] };
+    entry.items.push(item);
+    groups.set(key, entry);
+  }
+  return {
+    results: [...groups.values()].map(({ group, items: list }) => ({
+      group,
+      data: [
+        {
+          interval: `${new Date(interval.start).toISOString()}/${new Date(interval.end).toISOString()}`,
+          metrics: metrics.flatMap((name) => {
+            const stats = metric(name, list);
+            return stats ? [{ metric: name, stats }] : [];
+          }),
+        },
+      ],
+    })),
+  };
 }
 
 /** Relative arrival rate by local hour, peaking mid-morning and mid-afternoon. */
@@ -943,6 +1536,19 @@ function computeMetric(name: string, items: DemoConversation[], now: number) {
     case 'tHandle':
       stats = sum(handled, (c) => c.talkMs + c.holdMs + c.acwMs);
       break;
+    case 'tFlowOut':
+      stats = sum(inbound.filter((c) => c.flowOutAt !== undefined && c.flowOutAt <= now), (c) => c.flowOutAt! - c.start);
+      break;
+    case 'nOutboundConnected': {
+      const out = items.filter((c) => c.direction === 'outbound' && c.agentId);
+      stats = out.length ? { count: out.length } : undefined;
+      break;
+    }
+    case 'nOutboundAttempted': {
+      const out = items.filter((c) => c.direction === 'outbound' && c.agentId);
+      stats = out.length ? { count: out.reduce((n, c) => n + attempts(c), 0) } : undefined;
+      break;
+    }
     case 'nTransferred':
       stats = handled.some((c) => c.transferred) ? { count: handled.filter((c) => c.transferred).length } : undefined;
       break;
@@ -980,7 +1586,8 @@ function matchesMetrics(filter: unknown, c: DemoConversation, now: number): bool
     tConversationDuration: c.endAt <= now ? c.endAt - c.start : undefined,
     tHandle: c.agentId && c.endAt <= now ? c.talkMs + c.holdMs + c.acwMs : undefined,
     tHeld: c.holdMs || undefined,
-    tWait: (c.answeredAt ?? c.abandonedAt ?? now) - c.start,
+    tWait: (c.answeredAt ?? c.abandonedAt ?? c.flowOutAt ?? now) - c.start,
+    tFlowOut: c.flowOutAt !== undefined && c.flowOutAt <= now ? c.flowOutAt - c.start : undefined,
   };
   const checks = (f.predicates ?? []).map((p) => {
     const v = values[p.metric ?? ''];

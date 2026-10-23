@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assertReadOnly, covers, evaluate, HttpPlatformClient, maskAddress, maskName, PlatformError, resolveInterval } from '../src/index.js';
+import { assertReadOnly, covers, evaluate, HttpPlatformClient, maskAddress, maskName, maskText, PlatformError, resolveInterval } from '../src/index.js';
 
 describe('resolveInterval', () => {
   const now = new Date('2026-10-21T16:30:00Z');
@@ -42,6 +42,11 @@ describe('redaction', () => {
     expect(maskAddress('web-chat')).toBe('web-chat');
   });
 
+  it('masks contact details inside free text', () => {
+    expect(maskText('Call me at 555-201-8890 or write to ana.perez@example.com')).toBe('Call me at •••8890 or write to a•••@example.com');
+    expect(maskText('Order 12345 arrived on 2026-10-21')).toBe('Order 12345 arrived on 2026-10-21');
+  });
+
   it('reduces names to initials', () => {
     expect(maskName('Laura Perez')).toBe('L. P.');
     expect(maskName('+1 555 123 4567')).toBe('+1•••4567');
@@ -55,6 +60,9 @@ describe('read-only guard', () => {
     expect(() => assertReadOnly('POST', '/api/v2/analytics/users/details/query')).not.toThrow();
     expect(() => assertReadOnly('POST', '/api/v2/analytics/flows/aggregates/query')).not.toThrow();
     expect(() => assertReadOnly('POST', '/api/v2/architect/schedules')).toThrow(/read-only/);
+    expect(() => assertReadOnly('POST', '/api/v2/workforcemanagement/managementunits/mu1/agentschedules/search')).not.toThrow();
+    expect(() => assertReadOnly('POST', '/api/v2/workforcemanagement/managementunits/mu1/schedules')).toThrow(/read-only/);
+    expect(() => assertReadOnly('POST', '/api/v2/outbound/campaigns')).toThrow(/read-only/);
     expect(() => assertReadOnly('POST', '/api/v2/routing/queues')).toThrow(PlatformError);
     expect(() => assertReadOnly('POST', '/api/v2/conversations/calls')).toThrow(/read-only/);
     expect(() => assertReadOnly('DELETE' as never, '/api/v2/users/1')).toThrow();

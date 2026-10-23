@@ -1,7 +1,8 @@
 export type Method = 'GET' | 'POST';
 
 export interface RequestOptions {
-  query?: Record<string, string | number | boolean | undefined>;
+  /** Arrays are sent as repeated parameters. */
+  query?: Record<string, string | number | boolean | string[] | undefined>;
   body?: unknown;
 }
 
@@ -28,6 +29,9 @@ const READ_ONLY_POST = [
   /^\/api\/v2\/analytics\/users\/aggregates\/query$/,
   /^\/api\/v2\/analytics\/users\/details\/query$/,
   /^\/api\/v2\/analytics\/flows\/aggregates\/query$/,
+  /^\/api\/v2\/analytics\/evaluations\/aggregates\/query$/,
+  /^\/api\/v2\/analytics\/surveys\/aggregates\/query$/,
+  /^\/api\/v2\/workforcemanagement\/managementunits\/[^/]+\/agentschedules\/search$/,
   /^\/api\/v2\/users\/search$/,
 ];
 

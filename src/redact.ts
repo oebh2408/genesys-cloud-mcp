@@ -30,3 +30,11 @@ export function maskName(name: string | undefined): string | undefined {
     .map((w) => `${w[0]!.toUpperCase()}.`)
     .join(' ');
 }
+
+/** Mask email addresses and phone numbers that appear inside free text, such as survey comments. */
+export function maskText(text: string | undefined): string | undefined {
+  if (!text) return text;
+  return text
+    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, (m) => maskAddress(m) ?? m)
+    .replace(/\+?\d[\d\s().-]{5,}\d/g, (m) => (m.replace(/\D/g, '').length >= 7 && !/^\d{4}-\d{2}-\d{2}$/.test(m) ? (maskAddress(m) ?? m) : m));
+}
