@@ -35,6 +35,19 @@ export class Directory {
     return this.list('/api/v2/routing/wrapupcodes');
   }
 
+  flows(): Promise<(Named & { type?: string; description?: string })[]> {
+    return this.list('/api/v2/flows');
+  }
+
+  async flowName(id: string | undefined): Promise<string | undefined> {
+    if (!id) return undefined;
+    return (await this.flows()).find((f) => f.id === id)?.name ?? id;
+  }
+
+  async resolveFlows(inputs: string[]): Promise<Named[]> {
+    return resolve(await this.flows(), inputs, 'flow');
+  }
+
   async queueName(id: string | undefined): Promise<string | undefined> {
     if (!id) return undefined;
     return (await this.queues()).find((q) => q.id === id)?.name ?? id;

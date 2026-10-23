@@ -5,3 +5,4 @@ export { assertReadOnly, PlatformError, type PlatformClient, type Method, type R
 export { tools, type ToolContext, type ToolDefinition } from './tools.js';
 export { resolveInterval, type ResolvedInterval } from './time.js';
 export { maskAddress, maskName } from './redact.js';
+export { covers, evaluate, nextChange, type Schedule, type ScheduleGroup, type ScheduleState } from './schedule.js';

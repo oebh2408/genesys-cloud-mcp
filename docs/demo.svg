@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="850" height="722" viewBox="0 0 850 722" role="img" aria-label="Terminal demo: three read-only tool calls against the demo contact center show live queue status, today's queue performance and the abandoned calls in Billing, with customer data masked">
+<svg xmlns="http://www.w3.org/2000/svg" width="850" height="911" viewBox="0 0 850 911" role="img" aria-label="Terminal demo: four read-only tool calls against the demo contact center show live queue status, today's queue performance, the abandoned calls in Billing with customer data masked, and how the Billing agents spent their time">
 <style>
 text{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:14px}
 @keyframes l0{0%,7.14%{opacity:0}7.94%,94%{opacity:1}100%{opacity:0}}.l0{opacity:0;animation:l0 18s linear infinite}
@@ -24,10 +24,17 @@ text{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Li
 @keyframes l25{0%,19.64%{opacity:0}20.44%,94%{opacity:1}100%{opacity:0}}.l25{opacity:0;animation:l25 18s linear infinite}
 @keyframes l26{0%,20.14%{opacity:0}20.94%,94%{opacity:1}100%{opacity:0}}.l26{opacity:0;animation:l26 18s linear infinite}
 @keyframes l28{0%,21.14%{opacity:0}21.94%,94%{opacity:1}100%{opacity:0}}.l28{opacity:0;animation:l28 18s linear infinite}
+@keyframes l30{0%,22.14%{opacity:0}22.94%,94%{opacity:1}100%{opacity:0}}.l30{opacity:0;animation:l30 18s linear infinite}
+@keyframes l32{0%,23.14%{opacity:0}23.94%,94%{opacity:1}100%{opacity:0}}.l32{opacity:0;animation:l32 18s linear infinite}
+@keyframes l33{0%,23.64%{opacity:0}24.44%,94%{opacity:1}100%{opacity:0}}.l33{opacity:0;animation:l33 18s linear infinite}
+@keyframes l34{0%,24.14%{opacity:0}24.94%,94%{opacity:1}100%{opacity:0}}.l34{opacity:0;animation:l34 18s linear infinite}
+@keyframes l35{0%,24.64%{opacity:0}25.44%,94%{opacity:1}100%{opacity:0}}.l35{opacity:0;animation:l35 18s linear infinite}
+@keyframes l36{0%,25.14%{opacity:0}25.94%,94%{opacity:1}100%{opacity:0}}.l36{opacity:0;animation:l36 18s linear infinite}
+@keyframes l37{0%,25.64%{opacity:0}26.44%,94%{opacity:1}100%{opacity:0}}.l37{opacity:0;animation:l37 18s linear infinite}
 @keyframes type{0%{width:0}2%{width:0}4.36%{width:101.16px}94%{width:101.16px}100%{width:0}}.type{animation:type 18s steps(12) infinite}
 </style>
-<rect width="850" height="722" rx="14" fill="#05050B"/>
-<rect x="0.5" y="0.5" width="849" height="721" rx="14" fill="none" stroke="#1E1B2E"/>
+<rect width="850" height="911" rx="14" fill="#05050B"/>
+<rect x="0.5" y="0.5" width="849" height="910" rx="14" fill="none" stroke="#1E1B2E"/>
 <circle cx="24" cy="22" r="5.5" fill="#2A2638"/><circle cx="42" cy="22" r="5.5" fill="#2A2638"/><circle cx="60" cy="22" r="5.5" fill="#2A2638"/>
 <text x="425" y="26" text-anchor="middle" fill="#8B86A0" style="font-size:12px">genesys-cloud-mcp · demo contact center</text>
 <line x1="0" y1="42" x2="850" y2="42" stroke="#1E1B2E"/>
@@ -44,17 +51,24 @@ text{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Li
 <text class="l8" x="28" y="253" xml:space="preserve"><tspan fill="#F4F2EC" >  Chat Support            0             0s             1          4      2</tspan></text>
 <text class="l10" x="28" y="295" xml:space="preserve"><tspan fill="#A98BFF" >→ </tspan><tspan fill="#6FF2C6" >get_queue_performance</tspan><tspan fill="#8B86A0" > {"interval":"today"}</tspan></text>
 <text class="l12" x="28" y="337" xml:space="preserve"><tspan fill="#8B86A0" >  queue             offered   abandoned   service level   avg answer   avg handle</tspan></text>
-<text class="l13" x="28" y="358" xml:space="preserve"><tspan fill="#F4F2EC" >  Support                90   </tspan><tspan fill="#F4F2EC" >     2.2%</tspan><tspan fill="#F4F2EC" >             90%           4s       6m 23s</tspan></text>
-<text class="l14" x="28" y="379" xml:space="preserve"><tspan fill="#F4F2EC" >  Billing                79   </tspan><tspan fill="#F2C46D" >    32.9%</tspan><tspan fill="#F4F2EC" >           49.3%          28s       5m 35s</tspan></text>
-<text class="l15" x="28" y="400" xml:space="preserve"><tspan fill="#F4F2EC" >  Chat Support           40   </tspan><tspan fill="#F4F2EC" >     7.5%</tspan><tspan fill="#F4F2EC" >           76.9%          15s       9m 39s</tspan></text>
-<text class="l16" x="28" y="421" xml:space="preserve"><tspan fill="#F4F2EC" >  Sales                  39   </tspan><tspan fill="#F2C46D" >    28.2%</tspan><tspan fill="#F4F2EC" >           62.9%          22s       8m 02s</tspan></text>
-<text class="l17" x="28" y="442" xml:space="preserve"><tspan fill="#F4F2EC" >  Spanish Support        37   </tspan><tspan fill="#F2C46D" >    21.6%</tspan><tspan fill="#F4F2EC" >           67.6%          28s       7m 41s</tspan></text>
-<text class="l18" x="28" y="463" xml:space="preserve"><tspan fill="#F4F2EC" >  Retention              24   </tspan><tspan fill="#F4F2EC" >     8.3%</tspan><tspan fill="#F4F2EC" >           87.5%           3s      10m 55s</tspan></text>
+<text class="l13" x="28" y="358" xml:space="preserve"><tspan fill="#F4F2EC" >  Support                90   </tspan><tspan fill="#F4F2EC" >       0%</tspan><tspan fill="#F4F2EC" >             90%           6s       6m 27s</tspan></text>
+<text class="l14" x="28" y="379" xml:space="preserve"><tspan fill="#F4F2EC" >  Billing                79   </tspan><tspan fill="#F2C46D" >    31.6%</tspan><tspan fill="#F4F2EC" >           48.6%          29s       5m 34s</tspan></text>
+<text class="l15" x="28" y="400" xml:space="preserve"><tspan fill="#F4F2EC" >  Chat Support           40   </tspan><tspan fill="#F4F2EC" >    12.5%</tspan><tspan fill="#F4F2EC" >           76.3%          18s       9m 57s</tspan></text>
+<text class="l16" x="28" y="421" xml:space="preserve"><tspan fill="#F4F2EC" >  Sales                  39   </tspan><tspan fill="#F2C46D" >    28.2%</tspan><tspan fill="#F4F2EC" >           61.1%          19s       8m 12s</tspan></text>
+<text class="l17" x="28" y="442" xml:space="preserve"><tspan fill="#F4F2EC" >  Spanish Support        37   </tspan><tspan fill="#F2C46D" >    21.6%</tspan><tspan fill="#F4F2EC" >           64.7%          34s       7m 38s</tspan></text>
+<text class="l18" x="28" y="463" xml:space="preserve"><tspan fill="#F4F2EC" >  Retention              24   </tspan><tspan fill="#F4F2EC" >    12.5%</tspan><tspan fill="#F4F2EC" >           83.3%           8s      10m 26s</tspan></text>
 <text class="l20" x="28" y="505" xml:space="preserve"><tspan fill="#A98BFF" >→ </tspan><tspan fill="#6FF2C6" >search_conversations</tspan><tspan fill="#8B86A0" > {"interval":"today","queue":"Billing","outcome":"abandoned","limit":4}</tspan></text>
 <text class="l22" x="28" y="547" xml:space="preserve"><tspan fill="#8B86A0" >  started   queue     media   waited   customer   from</tspan></text>
 <text class="l23" x="28" y="568" xml:space="preserve"><tspan fill="#F4F2EC" >  11:33     Billing   voice   1m 20s   J. P.      +1•••9616</tspan></text>
 <text class="l24" x="28" y="589" xml:space="preserve"><tspan fill="#F4F2EC" >  11:22     Billing   voice   1m 06s   N. R.      +1•••5371</tspan></text>
-<text class="l25" x="28" y="610" xml:space="preserve"><tspan fill="#F4F2EC" >  10:59     Billing   voice   1m 05s   E. F.      +1•••2405</tspan></text>
-<text class="l26" x="28" y="631" xml:space="preserve"><tspan fill="#F4F2EC" >  10:56     Billing   voice      16s   D. L.      +1•••3499</tspan></text>
-<text class="l28" x="28" y="673" xml:space="preserve"><tspan fill="#8B86A0" >  4 of 26. Customer names, numbers and addresses are masked by default.</tspan></text>
+<text class="l25" x="28" y="610" xml:space="preserve"><tspan fill="#F4F2EC" >  10:57     Billing   voice      13s   J. T.      +1•••3675</tspan></text>
+<text class="l26" x="28" y="631" xml:space="preserve"><tspan fill="#F4F2EC" >  10:57     Billing   voice   1m 27s   J. G.      +1•••4898</tspan></text>
+<text class="l28" x="28" y="673" xml:space="preserve"><tspan fill="#8B86A0" >  4 of 25. Customer names, numbers and addresses are masked by default.</tspan></text>
+<text class="l30" x="28" y="715" xml:space="preserve"><tspan fill="#A98BFF" >→ </tspan><tspan fill="#6FF2C6" >get_agent_status_summary</tspan><tspan fill="#8B86A0" > {"queue":"Billing","interval":"today"}</tspan></text>
+<text class="l32" x="28" y="757" xml:space="preserve"><tspan fill="#8B86A0" >  agent          logged in   on queue   interacting   off queue   occupancy</tspan></text>
+<text class="l33" x="28" y="778" xml:space="preserve"><tspan fill="#F4F2EC" >  Grace Lee         1h 40m     1h 27m        1h 13m      0h 13m         83%</tspan></text>
+<text class="l34" x="28" y="799" xml:space="preserve"><tspan fill="#F4F2EC" >  Isabel Gómez      3h 40m     2h 42m        2h 05m      0h 58m       77.2%</tspan></text>
+<text class="l35" x="28" y="820" xml:space="preserve"><tspan fill="#F4F2EC" >  Jack Turner       2h 40m     2h 40m        2h 01m      0h 00m       75.6%</tspan></text>
+<text class="l36" x="28" y="841" xml:space="preserve"><tspan fill="#F4F2EC" >  Karen Diaz        0h 40m     0h 40m        0h 15m      0h 00m       37.5%</tspan></text>
+<text class="l37" x="28" y="862" xml:space="preserve"><tspan fill="#F4F2EC" >  Quinn Foster      0h 40m     0h 40m        0h 20m      0h 00m         50%</tspan></text>
 </svg>

@@ -26,6 +26,8 @@ const READ_ONLY_POST = [
   /^\/api\/v2\/analytics\/conversations\/details\/query$/,
   /^\/api\/v2\/analytics\/queues\/observations\/query$/,
   /^\/api\/v2\/analytics\/users\/aggregates\/query$/,
+  /^\/api\/v2\/analytics\/users\/details\/query$/,
+  /^\/api\/v2\/analytics\/flows\/aggregates\/query$/,
   /^\/api\/v2\/users\/search$/,
 ];
 

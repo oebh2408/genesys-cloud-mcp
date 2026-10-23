@@ -71,7 +71,7 @@ for (const line of stdout.replace(/^\n+/, "").replace(/\n+$/, "").split("\n")) {
     header = null;
     continue;
   }
-  if (/^\s+(queue|started)\s/.test(line)) {
+  if (/^\s+(queue|started|agent)\s/.test(line)) {
     header = line;
     rows.push([[line, C.dust]]);
     continue;
@@ -95,7 +95,7 @@ const svg = terminal({
   title: "genesys-cloud-mcp · demo contact center",
   typed: "npm run try",
   rows,
-  aria: "Terminal demo: three read-only tool calls against the demo contact center show live queue status, today's queue performance and the abandoned calls in Billing, with customer data masked",
+  aria: "Terminal demo: four read-only tool calls against the demo contact center show live queue status, today's queue performance, the abandoned calls in Billing with customer data masked, and how the Billing agents spent their time",
   step: 0.09,
 });
 writeFileSync("docs/demo.svg", svg);

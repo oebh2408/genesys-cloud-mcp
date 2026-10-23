@@ -15,6 +15,10 @@ export class DemoPlatformClient implements PlatformClient {
   private readonly agents: DemoAgent[];
   private readonly wrapups: { id: string; name: string }[];
   private readonly byId = new Map<string, DemoConversation>();
+  private readonly flows: DemoFlow[];
+  private readonly flowDays = new Map<number, DemoFlowSession[]>();
+  private readonly skills: { id: string; name: string }[];
+  private readonly scheduleGroup: { id: string; name: string; timeZone: string; open: DemoSchedule[]; closed: DemoSchedule[]; holidays: DemoSchedule[] };
 
   constructor(private readonly now: () => Date = () => new Date()) {
     const rng = random(7);
@@ -28,6 +32,20 @@ export class DemoPlatformClient implements PlatformClient {
       queueIds: queueNames.map((n) => this.queues.find((q) => q.name === n)!.id),
       shiftStart,
     }));
+    this.skills = SKILLS.map((name) => ({ id: uuid(rng), name }));
+    this.flows = FLOWS.map((f) => ({ ...f, id: uuid(rng), queueIds: f.queues.map((n) => this.queues.find((q) => q.name === n)!.id) }));
+    const schedule = (name: string, start: string, end: string, rrule?: string): DemoSchedule => ({ id: uuid(rng), name, start, end, ...(rrule ? { rrule } : {}) });
+    this.scheduleGroup = {
+      id: uuid(rng),
+      name: 'Contact Center Hours',
+      timeZone: 'America/Bogota',
+      open: [
+        schedule('Weekdays 08:00-20:00', '2026-01-05T08:00:00.000', '2026-01-05T20:00:00.000', 'FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR'),
+        schedule('Weekends 09:00-17:00', '2026-01-03T09:00:00.000', '2026-01-03T17:00:00.000', 'FREQ=WEEKLY;INTERVAL=1;BYDAY=SA,SU'),
+      ],
+      closed: [schedule('Quarterly team meeting', '2026-11-27T08:00:00.000', '2026-11-27T09:30:00.000')],
+      holidays: HOLIDAYS.map(([date, name]) => schedule(name, `${date}T00:00:00.000`, `${nextDate(date)}T00:00:00.000`)),
+    };
   }
 
   async request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
@@ -37,14 +55,36 @@ export class DemoPlatformClient implements PlatformClient {
     let m: RegExpExecArray | null;
 
     if (method === 'GET' && path === '/api/v2/routing/queues') return this.listQueues(q) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/routing\/queues\/([^/]+)$/.exec(path))) return this.queueEntity(this.queue(m[1]!)) as T;
     if (method === 'GET' && (m = /^\/api\/v2\/routing\/queues\/([^/]+)\/members$/.exec(path))) return this.queueMembers(m[1]!, q) as T;
-    if (method === 'GET' && path === '/api/v2/users') return this.listUsers(q) as T;
-    if (method === 'GET' && (m = /^\/api\/v2\/users\/([^/]+)$/.exec(path))) {
-      const agent = this.agents.find((a) => a.id === m![1]);
-      if (!agent) throw new PlatformError(`User ${m[1]} not found.`, 404);
-      return this.userEntity(agent) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/routing\/queues\/([^/]+)\/wrapupcodes$/.exec(path))) {
+      const queue = this.queue(m[1]!);
+      return page(this.wrapups.filter((w) => queue.wrapups.includes(w.name)), q) as T;
     }
+    if (method === 'GET' && path === '/api/v2/users') return this.listUsers(q) as T;
+    if (method === 'GET' && (m = /^\/api\/v2\/users\/([^/]+)\/queues$/.exec(path))) {
+      const agent = this.agent(m[1]!);
+      return page(this.queues.filter((x) => agent.queueIds.includes(x.id)).map((x) => ({ id: x.id, name: x.name, joined: true })), q) as T;
+    }
+    if (method === 'GET' && (m = /^\/api\/v2\/users\/([^/]+)$/.exec(path))) return this.userEntity(this.agent(m[1]!), String(q.expand ?? '')) as T;
     if (method === 'GET' && path === '/api/v2/routing/wrapupcodes') return page(this.wrapups, q) as T;
+    if (method === 'GET' && path === '/api/v2/routing/skills') return page(this.skills, q) as T;
+    if (method === 'GET' && path === '/api/v2/flows') {
+      const types = typeof q.type === 'string' ? q.type.split(',') : undefined;
+      return page(this.flows.filter((f) => !types || types.includes(f.type)).map((f) => ({ id: f.id, name: f.name, type: f.type, description: f.description, publishedVersion: { id: '12' } })), q) as T;
+    }
+    if (method === 'GET' && path === '/api/v2/architect/schedulegroups') {
+      const g = this.scheduleGroup;
+      const ref = (list: DemoSchedule[]) => list.map((x) => ({ id: x.id, name: x.name }));
+      return page([{ id: g.id, name: g.name, timeZone: g.timeZone, openSchedules: ref(g.open), closedSchedules: ref(g.closed), holidaySchedules: ref(g.holidays) }], q) as T;
+    }
+    if (method === 'GET' && path === '/api/v2/architect/schedules') {
+      const g = this.scheduleGroup;
+      return page([...g.open, ...g.closed, ...g.holidays], q) as T;
+    }
+    if (path === '/api/v2/analytics/users/aggregates/query') return this.userAggregates(body) as T;
+    if (path === '/api/v2/analytics/users/details/query') return this.userDetails(body) as T;
+    if (path === '/api/v2/analytics/flows/aggregates/query') return this.flowAggregates(body) as T;
     if (method === 'GET' && (m = /^\/api\/v2\/analytics\/conversations\/([^/]+)\/details$/.exec(path))) return this.conversation(m[1]!) as T;
     if (path === '/api/v2/analytics/queues/observations/query') return this.observations(body) as T;
     if (path === '/api/v2/analytics/conversations/aggregates/query') return this.aggregates(body) as T;
@@ -56,20 +96,43 @@ export class DemoPlatformClient implements PlatformClient {
 
   private listQueues(q: RequestOptions['query'] & object) {
     const pattern = typeof q.name === 'string' ? wildcard(q.name) : undefined;
-    const queues = this.queues
-      .filter((x) => !pattern || pattern.test(x.name))
-      .map((x) => {
-        const members = this.agents.filter((a) => a.queueIds.includes(x.id));
-        return {
-          id: x.id,
-          name: x.name,
-          description: x.description,
-          memberCount: members.length,
-          joinedMemberCount: members.length,
-          mediaSettings: { [x.mediaType === 'voice' ? 'call' : x.mediaType]: { serviceLevel: { percentage: 0.8, durationMs: SL_TARGET_MS } } },
-        };
-      });
-    return page(queues, q);
+    return page(
+      this.queues.filter((x) => !pattern || pattern.test(x.name)).map((x) => this.queueEntity(x)),
+      q,
+    );
+  }
+
+  private wrapupId(name: string): string {
+    return this.wrapups.find((w) => w.name === name)!.id;
+  }
+
+  private queue(id: string): DemoQueue {
+    const queue = this.queues.find((x) => x.id === id);
+    if (!queue) throw new PlatformError(`Queue ${id} not found.`, 404);
+    return queue;
+  }
+
+  private agent(id: string): DemoAgent {
+    const agent = this.agents.find((a) => a.id === id);
+    if (!agent) throw new PlatformError(`User ${id} not found.`, 404);
+    return agent;
+  }
+
+  private queueEntity(x: DemoQueue) {
+    const members = this.agents.filter((a) => a.queueIds.includes(x.id));
+    const media = x.mediaType === 'voice' ? 'call' : x.mediaType;
+    return {
+      id: x.id,
+      name: x.name,
+      description: x.description,
+      memberCount: members.length,
+      joinedMemberCount: members.length,
+      mediaSettings: { [media]: { alertingTimeoutSeconds: x.mediaType === 'voice' ? 8 : 30, serviceLevel: { percentage: 0.8, durationMs: SL_TARGET_MS } } },
+      acwSettings: { wrapupPrompt: 'MANDATORY_TIMEOUT', timeoutMs: 60_000 },
+      skillEvaluationMethod: 'BEST',
+      callingPartyName: x.mediaType === 'voice' ? 'Demo Contact Center' : undefined,
+      dateModified: '2026-09-14T15:20:00.000Z',
+    };
   }
 
   private queueMembers(queueId: string, q: RequestOptions['query'] & object) {
@@ -78,7 +141,7 @@ export class DemoPlatformClient implements PlatformClient {
       .filter((a) => a.queueIds.includes(queueId))
       .map((a) => {
         const s = this.agentState(a);
-        return { id: a.id, name: a.name, joined: true, routingStatus: { status: s.routing }, user: this.userEntity(a) };
+        return { id: a.id, name: a.name, joined: true, routingStatus: { status: s.routing }, user: this.userEntity(a, String(q.expand ?? 'presence,routingStatus')) };
       });
     return page(members, q);
   }
@@ -90,8 +153,10 @@ export class DemoPlatformClient implements PlatformClient {
     );
   }
 
-  private userEntity(a: DemoAgent) {
+  private userEntity(a: DemoAgent, expand = 'presence,routingStatus') {
     const s = this.agentState(a);
+    const want = new Set(expand.split(','));
+    const skills = this.agentSkills(a);
     return {
       id: a.id,
       name: a.name,
@@ -101,22 +166,26 @@ export class DemoPlatformClient implements PlatformClient {
       state: 'active',
       presence: { presenceDefinition: { systemPresence: s.presence } },
       routingStatus: { status: s.routing },
+      ...(want.has('skills') ? { skills: skills.map((k) => ({ id: this.skills.find((x) => x.name === k.name)!.id, name: k.name, proficiency: k.proficiency, state: 'active' })) } : {}),
+      ...(want.has('languages') ? { languages: this.agentLanguages(a) } : {}),
     };
+  }
+
+  /** Skills follow the queues an agent works, with a fixed proficiency per agent and skill. */
+  private agentSkills(a: DemoAgent): { name: string; proficiency: number }[] {
+    const names = new Set(a.queueIds.flatMap((id) => QUEUE_SKILLS[this.queues.find((q) => q.id === id)!.name] ?? []));
+    return [...names].sort().map((name) => ({ name, proficiency: 2 + (hash(`${a.id}:${name}`) % 4) }));
+  }
+
+  private agentLanguages(a: DemoAgent): { name: string; proficiency: number }[] {
+    const spanish = a.queueIds.some((id) => this.queues.find((q) => q.id === id)!.name === 'Spanish Support');
+    return [{ name: 'English', proficiency: 5 }, ...(spanish ? [{ name: 'Spanish', proficiency: 5 }] : [])];
   }
 
   /** Presence and routing status at the current time. */
   private agentState(a: DemoAgent): { presence: string; routing: string } {
     const now = this.now().getTime();
-    if (!onShift(a, now)) return { presence: 'Offline', routing: 'OFF_QUEUE' };
-    const busy = this.conversationsAround(now).some((c) => c.agentId === a.id && c.answeredAt! <= now && now < c.endAt);
-    if (busy) return { presence: 'On Queue', routing: 'INTERACTING' };
-    // Off-queue activities change every 15 minutes, deterministically per agent.
-    const slot = Math.floor(now / 900_000);
-    const r = random(hash(`${a.id}:${slot}`))();
-    if (r < 0.05) return { presence: 'Break', routing: 'OFF_QUEUE' };
-    if (r < 0.08) return { presence: 'Meeting', routing: 'OFF_QUEUE' };
-    if (r < 0.1) return { presence: 'Away', routing: 'OFF_QUEUE' };
-    return { presence: 'On Queue', routing: 'IDLE' };
+    return stateAt(a, now, this.conversationsAround(now).filter((c) => c.agentId === a.id));
   }
 
   // ---- analytics -------------------------------------------------------------------------
@@ -224,6 +293,185 @@ export class DemoPlatformClient implements PlatformClient {
     list = list.sort((a, b) => (body.order === 'asc' ? a.start - b.start : b.start - a.start));
     const items = list.slice((pageNumber - 1) * pageSize, pageNumber * pageSize);
     return { conversations: items.map((c) => this.toDetails(c, now)), totalHits: list.length };
+  }
+
+  /** Status changes of one agent, cut to the interval and to the current time. */
+  private agentTimeline(a: DemoAgent, start: number, end: number) {
+    const convs = this.conversationsBetween(start - 6 * 3_600_000, end).filter((c) => c.agentId === a.id);
+    const cuts = new Set<number>([start, end]);
+    for (let t = Math.ceil(start / 900_000) * 900_000; t < end; t += 900_000) cuts.add(t);
+    for (const c of convs) for (const t of [c.answeredAt!, c.endAt]) if (t > start && t < end) cuts.add(t);
+    const points = [...cuts].sort((x, y) => x - y);
+    const pieces: { start: number; end: number; presence: string; routing: string }[] = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const s = stateAt(a, points[i]!, convs);
+      const last = pieces.at(-1);
+      if (last && last.presence === s.presence && last.routing === s.routing) last.end = points[i + 1]!;
+      else pieces.push({ start: points[i]!, end: points[i + 1]!, ...s });
+    }
+    return pieces;
+  }
+
+  private userAggregates(body: Record<string, unknown>) {
+    const interval = parseInterval(body.interval);
+    const end = Math.min(interval.end, this.now().getTime());
+    const ids = predicateValues(body.filter, 'userId');
+    const agents = this.agents.filter((a) => !ids.length || ids.includes(a.id));
+    const metrics = (body.metrics as string[] | undefined) ?? ['tAgentRoutingStatus', 'tSystemPresence'];
+    return {
+      results: agents.map((a) => {
+        const presence = new Map<string, number>();
+        const routing = new Map<string, number>();
+        for (const p of end > interval.start ? this.agentTimeline(a, interval.start, end) : []) {
+          if (p.presence === 'Offline') continue;
+          const ms = p.end - p.start;
+          const key = p.presence.toUpperCase().replace(' ', '_');
+          presence.set(key, (presence.get(key) ?? 0) + ms);
+          routing.set(p.routing, (routing.get(p.routing) ?? 0) + ms);
+        }
+        const data: Record<string, unknown>[] = [];
+        if (metrics.includes('tSystemPresence')) for (const [qualifier, sum] of presence) data.push({ metric: 'tSystemPresence', qualifier, stats: { sum } });
+        if (metrics.includes('tAgentRoutingStatus')) for (const [qualifier, sum] of routing) data.push({ metric: 'tAgentRoutingStatus', qualifier, stats: { sum } });
+        return { group: { userId: a.id }, data: [{ interval: `${new Date(interval.start).toISOString()}/${new Date(interval.end).toISOString()}`, metrics: data }] };
+      }),
+    };
+  }
+
+  private userDetails(body: Record<string, unknown>) {
+    const interval = parseInterval(body.interval);
+    const end = Math.min(interval.end, this.now().getTime());
+    const ids = ((body.userFilters as unknown[] | undefined) ?? []).flatMap((f) => predicateValues(f, 'userId'));
+    const agents = this.agents.filter((a) => !ids.length || ids.includes(a.id));
+    const iso = (t: number) => new Date(t).toISOString();
+    return {
+      userDetails: agents.map((a) => {
+        const pieces = end > interval.start ? this.agentTimeline(a, interval.start, end) : [];
+        const merge = (key: 'presence' | 'routing') => {
+          const out: { start: number; end: number; value: string }[] = [];
+          for (const p of pieces) {
+            const last = out.at(-1);
+            if (last && last.value === p[key]) last.end = p.end;
+            else out.push({ start: p.start, end: p.end, value: p[key] });
+          }
+          return out;
+        };
+        return {
+          userId: a.id,
+          primaryPresence: merge('presence').map((p) => ({ startTime: iso(p.start), endTime: iso(p.end), systemPresence: p.value.toUpperCase().replace(' ', '_') })),
+          routingStatus: merge('routing').map((p) => ({ startTime: iso(p.start), endTime: iso(p.end), routingStatus: p.value })),
+        };
+      }),
+    };
+  }
+
+  private flowAggregates(body: Record<string, unknown>) {
+    const interval = parseInterval(body.interval);
+    const now = this.now().getTime();
+    const groupBy = (body.groupBy as string[] | undefined) ?? [];
+    const metrics = (body.metrics as string[] | undefined) ?? ['nFlow'];
+    const granularity = body.granularity ? durationMs(String(body.granularity)) : undefined;
+    const sessions = this.flowSessionsBetween(interval.start, Math.min(interval.end, now)).filter((x) => {
+      const flow = this.flows.find((f) => f.id === x.flowId)!;
+      return matches(body.filter, { flowId: flow.id, flowType: flow.type, mediaType: flow.type === 'inboundchat' ? 'chat' : 'voice' });
+    });
+    const groups = new Map<string, { group: Record<string, string>; items: DemoFlowSession[] }>();
+    for (const x of sessions) {
+      const flow = this.flows.find((f) => f.id === x.flowId)!;
+      const dims: Record<string, string> = { flowId: flow.id, flowType: flow.type };
+      const group = Object.fromEntries(groupBy.map((g) => [g, dims[g] ?? '']));
+      const key = JSON.stringify(group);
+      const entry = groups.get(key) ?? { group, items: [] };
+      entry.items.push(x);
+      groups.set(key, entry);
+    }
+    const stats = (list: DemoFlowSession[]) => (list.length ? { count: list.length, sum: list.reduce((n, x) => n + x.ms, 0), max: Math.max(...list.map((x) => x.ms)) } : undefined);
+    const metric = (name: string, items: DemoFlowSession[]) => {
+      const s =
+        name === 'nFlow'
+          ? items.length && { count: items.length }
+          : name === 'tFlow'
+            ? stats(items)
+            : name === 'tFlowExit'
+              ? stats(items.filter((x) => x.outcome === 'queue'))
+              : name === 'tFlowDisconnect'
+                ? stats(items.filter((x) => x.outcome !== 'queue'))
+                : name === 'nFlowOutcome'
+                  ? items.some((x) => x.outcome === 'self-service') && { count: items.filter((x) => x.outcome === 'self-service').length }
+                  : name === 'nFlowOutcomeFailed'
+                    ? items.some((x) => x.failedOutcome) && { count: items.filter((x) => x.failedOutcome).length }
+                    : undefined;
+      return s ? { metric: name, stats: s } : undefined;
+    };
+    return {
+      results: [...groups.values()].map(({ group, items }) => {
+        const buckets = new Map<number, DemoFlowSession[]>();
+        for (const x of items) {
+          const b = granularity ? interval.start + Math.floor((x.start - interval.start) / granularity) * granularity : interval.start;
+          buckets.set(b, [...(buckets.get(b) ?? []), x]);
+        }
+        return {
+          group,
+          data: [...buckets.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([start, list]) => ({
+              interval: `${new Date(start).toISOString()}/${new Date(granularity ? Math.min(start + granularity, interval.end) : interval.end).toISOString()}`,
+              metrics: metrics.map((name) => metric(name, list)).filter((x): x is NonNullable<typeof x> => !!x),
+            })),
+        };
+      }),
+    };
+  }
+
+  private flowSessionsBetween(start: number, end: number): DemoFlowSession[] {
+    const out: DemoFlowSession[] = [];
+    const nowDay = Math.floor(this.now().getTime() / DAY);
+    for (let day = Math.floor(start / DAY); day <= Math.floor((end - 1) / DAY); day++) {
+      if (day < nowDay - HISTORY_DAYS || day > nowDay) continue;
+      for (const x of this.flowDay(day)) if (x.start >= start && x.start < end) out.push(x);
+    }
+    return out;
+  }
+
+  /**
+   * IVR and chat bot sessions for one day. Every inbound conversation that reached a queue went
+   * through its entry flow first; on top of that some callers finish in self-service, some hang up
+   * in the menus, and outside opening hours callers hear the closed message.
+   */
+  private flowDay(day: number): DemoFlowSession[] {
+    const cached = this.flowDays.get(day);
+    if (cached) return cached;
+    const rng = random(hash(`flows:${day}`));
+    const convs = this.day(day);
+    const out: DemoFlowSession[] = [];
+    for (const flow of this.flows) {
+      for (const c of convs) {
+        if (c.direction !== 'inbound' || !flow.queueIds.includes(c.queueId)) continue;
+        const ms = Math.round(flow.menuSec * 1000 * (0.6 + rng() * 0.8));
+        out.push({ flowId: flow.id, start: c.start - ms, ms, outcome: 'queue', failedOutcome: rng() < flow.authFailure });
+      }
+      for (let h = 0; h < 24; h++) {
+        const hourStart = day * DAY + h * 3_600_000;
+        const local = (h + DEMO_UTC_OFFSET + 24) % 24;
+        const peak = flow.queueIds.reduce((n, id) => n + this.queues.find((q) => q.id === id)!.peakPerHour, 0);
+        if (isOpen(hourStart)) {
+          const queued = convs.filter((c) => c.direction === 'inbound' && flow.queueIds.includes(c.queueId) && c.start >= hourStart && c.start < hourStart + 3_600_000).length;
+          for (let i = poisson(queued * flow.selfService, rng); i > 0; i--) {
+            out.push({ flowId: flow.id, start: hourStart + Math.floor(rng() * 3_600_000), ms: Math.round((90 + rng() * 150) * 1000), outcome: 'self-service', failedOutcome: false });
+          }
+          for (let i = poisson(queued * 0.05 + 0.2, rng); i > 0; i--) {
+            out.push({ flowId: flow.id, start: hourStart + Math.floor(rng() * 3_600_000), ms: Math.round((8 + rng() * 50) * 1000), outcome: 'hung-up', failedOutcome: rng() < 0.3 });
+          }
+        } else {
+          const rate = peak * 0.05 * (local >= 6 && local < 23 ? 1 : 0.2);
+          for (let i = poisson(rate, rng); i > 0; i--) {
+            out.push({ flowId: flow.id, start: hourStart + Math.floor(rng() * 3_600_000), ms: Math.round((15 + rng() * 10) * 1000), outcome: 'closed', failedOutcome: false });
+          }
+        }
+      }
+    }
+    out.sort((a, b) => a.start - b.start);
+    this.flowDays.set(day, out);
+    return out;
   }
 
   private conversation(id: string) {
@@ -368,8 +616,7 @@ export class DemoPlatformClient implements PlatformClient {
       for (let h = 0; h < 24; h++) {
         const local = (h + DEMO_UTC_OFFSET + 24) % 24;
         // Outside opening hours the IVR plays a closed message and calls never reach a queue.
-        const open = weekend ? local >= 9 && local < 17 : local >= 8 && local < 20;
-        if (!open) continue;
+        if (!isOpen(dayStart + h * 3_600_000)) continue;
         const rate = queue.peakPerHour * curve(local) * (weekend ? queue.weekendFactor : 1);
         const count = poisson(rate, rng);
         for (let i = 0; i < count; i++) {
@@ -389,10 +636,10 @@ export class DemoPlatformClient implements PlatformClient {
       for (const a of members) {
         const free = Math.max(busyUntil.get(a.id) ?? 0, start);
         if (!onShift(a, free)) continue;
-        // Agents are pulled into a 15-minute break or meeting now and then.
-        const slot = Math.floor(free / 900_000);
-        const pause = random(hash(`${a.id}:${slot}`))() < 0.1 ? (slot + 1) * 900_000 : free;
-        const t = onShift(a, pause) ? pause : Infinity;
+        // Lunch, and a 15-minute break or meeting now and then, delay the next answer.
+        let pause = free;
+        for (let i = 0; i < 8 && offQueueAt(a, pause); i++) pause = (Math.floor(pause / 900_000) + 1) * 900_000;
+        const t = onShift(a, pause) && !offQueueAt(a, pause) ? pause : Infinity;
         if (t < answeredAt) {
           answeredAt = t;
           pick = a;
@@ -432,7 +679,7 @@ export class DemoPlatformClient implements PlatformClient {
         holdMs,
         acwMs,
         endAt,
-        wrapupId: this.wrapups[Math.floor(rng() ** 1.6 * this.wrapups.length)]!.id,
+        wrapupId: this.wrapupId(queue.wrapups[Math.floor(rng() ** 1.6 * queue.wrapups.length)]!),
         disconnectedBy: rng() < 0.6 ? 'customer' : 'agent',
         transferred: rng() < 0.05,
       });
@@ -458,6 +705,38 @@ interface DemoQueue {
   patienceSec: number;
   outboundShare: number;
   weekendFactor: number;
+  wrapups: string[];
+}
+
+interface DemoFlow {
+  id: string;
+  name: string;
+  type: 'inboundcall' | 'inboundchat';
+  description: string;
+  queues: string[];
+  queueIds: string[];
+  /** Average seconds in the menus before reaching a queue. */
+  menuSec: number;
+  /** Callers who finish in self-service, as a share of those who reach a queue. */
+  selfService: number;
+  /** Share of callers who fail identification before going to a queue. */
+  authFailure: number;
+}
+
+interface DemoFlowSession {
+  flowId: string;
+  start: number;
+  ms: number;
+  outcome: 'queue' | 'self-service' | 'hung-up' | 'closed';
+  failedOutcome: boolean;
+}
+
+interface DemoSchedule {
+  id: string;
+  name: string;
+  start: string;
+  end: string;
+  rrule?: string;
 }
 
 interface DemoAgent {
@@ -498,12 +777,12 @@ const SL_TARGET_MS = 20_000;
 const DEMO_UTC_OFFSET = -5;
 
 const QUEUES: Omit<DemoQueue, 'id'>[] = [
-  { name: 'Support', description: 'General product support', mediaType: 'voice', number: '+18005550100', peakPerHour: 46, ahtSec: 330, patienceSec: 150, outboundShare: 0, weekendFactor: 0.45 },
-  { name: 'Billing', description: 'Invoices, payments and refunds', mediaType: 'voice', number: '+18005550101', peakPerHour: 24, ahtSec: 270, patienceSec: 120, outboundShare: 0, weekendFactor: 0.3 },
-  { name: 'Sales', description: 'New customers and upgrades', mediaType: 'voice', number: '+18005550102', peakPerHour: 16, ahtSec: 420, patienceSec: 160, outboundShare: 0.2, weekendFactor: 0.5 },
-  { name: 'Retention', description: 'Cancellation requests', mediaType: 'voice', number: '+18005550103', peakPerHour: 8, ahtSec: 540, patienceSec: 260, outboundShare: 0.1, weekendFactor: 0.4 },
-  { name: 'Spanish Support', description: 'Support in Spanish', mediaType: 'voice', number: '+18005550104', peakPerHour: 15, ahtSec: 360, patienceSec: 160, outboundShare: 0, weekendFactor: 0.5 },
-  { name: 'Chat Support', description: 'Web chat support', mediaType: 'chat', address: 'web-chat', peakPerHour: 22, ahtSec: 560, patienceSec: 240, outboundShare: 0, weekendFactor: 0.6 },
+  { name: 'Support', description: 'General product support', mediaType: 'voice', number: '+18005550100', peakPerHour: 46, ahtSec: 330, patienceSec: 150, outboundShare: 0, weekendFactor: 0.45, wrapups: ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Wrong department'] },
+  { name: 'Billing', description: 'Invoices, payments and refunds', mediaType: 'voice', number: '+18005550101', peakPerHour: 24, ahtSec: 270, patienceSec: 120, outboundShare: 0, weekendFactor: 0.3, wrapups: ['Payment taken', 'Resolved', 'Information provided', 'Refund issued', 'Follow-up needed', 'Wrong department'] },
+  { name: 'Sales', description: 'New customers and upgrades', mediaType: 'voice', number: '+18005550102', peakPerHour: 16, ahtSec: 420, patienceSec: 160, outboundShare: 0.2, weekendFactor: 0.5, wrapups: ['Information provided', 'Sale completed', 'Follow-up needed', 'Wrong department'] },
+  { name: 'Retention', description: 'Cancellation requests', mediaType: 'voice', number: '+18005550103', peakPerHour: 8, ahtSec: 540, patienceSec: 260, outboundShare: 0.1, weekendFactor: 0.4, wrapups: ['Cancellation saved', 'Cancelled', 'Follow-up needed', 'Information provided'] },
+  { name: 'Spanish Support', description: 'Support in Spanish', mediaType: 'voice', number: '+18005550104', peakPerHour: 15, ahtSec: 360, patienceSec: 160, outboundShare: 0, weekendFactor: 0.5, wrapups: ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Wrong department'] },
+  { name: 'Chat Support', description: 'Web chat support', mediaType: 'chat', address: 'web-chat', peakPerHour: 22, ahtSec: 560, patienceSec: 240, outboundShare: 0, weekendFactor: 0.6, wrapups: ['Resolved', 'Information provided', 'Escalated', 'Follow-up needed'] },
 ];
 
 const AGENTS: [string, string[], number][] = [
@@ -534,6 +813,31 @@ const AGENTS: [string, string[], number][] = [
   ['Zoe Adams', ['Support', 'Retention'], 8],
 ];
 
+const SKILLS = ['Billing', 'Chat', 'Retention', 'Sales', 'Spanish', 'Technical'];
+const QUEUE_SKILLS: Record<string, string[]> = {
+  Support: ['Technical'],
+  Billing: ['Billing'],
+  Sales: ['Sales'],
+  Retention: ['Retention', 'Sales'],
+  'Spanish Support': ['Spanish', 'Technical'],
+  'Chat Support': ['Chat', 'Technical'],
+};
+
+const FLOWS: Omit<DemoFlow, 'id' | 'queueIds'>[] = [
+  { name: 'Main IVR', type: 'inboundcall', description: 'Main number: identification, self-service balance and payments, menu to queues', queues: ['Support', 'Billing', 'Sales', 'Retention'], menuSec: 55, selfService: 0.18, authFailure: 0.12 },
+  { name: 'Spanish IVR', type: 'inboundcall', description: 'Spanish line', queues: ['Spanish Support'], menuSec: 40, selfService: 0.08, authFailure: 0.1 },
+  { name: 'Web Chat Bot', type: 'inboundchat', description: 'Answers common questions before handing over to an agent', queues: ['Chat Support'], menuSec: 70, selfService: 0.3, authFailure: 0 },
+];
+
+/** Days the center is closed, local dates. */
+const HOLIDAYS: [string, string][] = [
+  ['2026-11-02', "All Saints' Day"],
+  ['2026-11-16', 'Independence of Cartagena'],
+  ['2026-12-08', 'Immaculate Conception'],
+  ['2026-12-25', 'Christmas Day'],
+  ['2027-01-01', "New Year's Day"],
+];
+
 const WRAPUPS = ['Resolved', 'Information provided', 'Follow-up needed', 'Escalated', 'Payment taken', 'Refund issued', 'Sale completed', 'Cancellation saved', 'Cancelled', 'Wrong department'];
 
 const FIRST = ['Alex', 'Maria', 'John', 'Laura', 'Carlos', 'Sophie', 'David', 'Lucia', 'Mark', 'Elena', 'Peter', 'Julia', 'Diego', 'Nina', 'Oscar', 'Paula'];
@@ -541,9 +845,52 @@ const LAST = ['Smith', 'Garcia', 'Brown', 'Lopez', 'Miller', 'Perez', 'Davis', '
 
 // ---- helpers -----------------------------------------------------------------------------
 
+/** Opening hours: weekdays 08:00-20:00, weekends 09:00-17:00, closed on holidays and during the team meeting. */
+function isOpen(t: number): boolean {
+  const localMs = t + DEMO_UTC_OFFSET * 3_600_000;
+  const date = new Date(localMs).toISOString().slice(0, 10);
+  if (HOLIDAYS.some(([d]) => d === date)) return false;
+  const local = (localMs / 3_600_000) % 24;
+  if (date === '2026-11-27' && local >= 8 && local < 9.5) return false;
+  const weekday = new Date(localMs).getUTCDay();
+  return weekday === 0 || weekday === 6 ? local >= 9 && local < 17 : local >= 8 && local < 20;
+}
+
+function nextDate(date: string): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + DAY).toISOString().slice(0, 10);
+}
+
+/** Presence and routing status of an agent at time t, given the conversations they handled around it. */
+function stateAt(a: DemoAgent, t: number, convs: DemoConversation[]): { presence: string; routing: string } {
+  if (!onShift(a, t)) return { presence: 'Offline', routing: 'OFF_QUEUE' };
+  if (convs.some((c) => c.agentId === a.id && c.answeredAt! <= t && t < c.endAt)) return { presence: 'On Queue', routing: 'INTERACTING' };
+  const off = offQueueAt(a, t);
+  return off ? { presence: off, routing: 'OFF_QUEUE' } : { presence: 'On Queue', routing: 'IDLE' };
+}
+
+/** The off-queue presence of an agent on shift at time t, if any. */
+function offQueueAt(a: DemoAgent, t: number): string | undefined {
+  const localMs = t + DEMO_UTC_OFFSET * 3_600_000;
+  const local = (localMs / 3_600_000) % 24;
+  const weekday = new Date(localMs).getUTCDay();
+  // Half an hour for lunch, four hours into the shift.
+  const meal = weekday === 0 || weekday === 6 ? 13 : a.shiftStart + 4;
+  if (local >= meal && local < meal + 0.5) return 'Meal';
+  // On shift while the center is closed only happens during the team meeting.
+  if (!isOpen(t)) return 'Meeting';
+  // Other activities change every 15 minutes, deterministically per agent.
+  const r = random(hash(`${a.id}:${Math.floor(t / 900_000)}`))();
+  if (r < 0.05) return 'Break';
+  if (r < 0.08) return 'Meeting';
+  if (r < 0.1) return 'Away';
+  return undefined;
+}
+
 function onShift(a: DemoAgent, t: number): boolean {
   const local = ((t / 3_600_000 + DEMO_UTC_OFFSET) % 24 + 24) % 24;
-  const weekday = new Date(t + DEMO_UTC_OFFSET * 3_600_000).getUTCDay();
+  const localDate = new Date(t + DEMO_UTC_OFFSET * 3_600_000);
+  if (HOLIDAYS.some(([d]) => d === localDate.toISOString().slice(0, 10))) return false;
+  const weekday = localDate.getUTCDay();
   const weekend = weekday === 0 || weekday === 6;
   // Half the team works weekends.
   if (weekend) return hash(a.id) % 2 === 1 && local >= 9 && local < 17;

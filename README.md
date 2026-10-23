@@ -8,11 +8,11 @@
 
 Most questions a supervisor asks about a contact center are simple to say and slow to answer: which queue is losing calls this morning, who handled the most chats yesterday, what happened to a specific call. In Genesys Cloud the answer is usually spread over a few analytics views and filters. An AI assistant with access to the Platform API could answer them directly, but giving it a token that can also change routing, or read every customer's phone number, is not something most teams want.
 
-This is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives the assistant seven tools over queues, agents and conversations, and nothing that writes. Every request goes through a read-only check before it is sent, and customer names, numbers and email addresses are masked by default. It includes a simulated contact center, so it can be tried in any MCP client without a Genesys Cloud account.
+This is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives the assistant fifteen tools over queues, agents, conversations, IVR flows and opening hours, and nothing that writes. Every request goes through a read-only check before it is sent, and customer names, numbers and email addresses are masked by default. It includes a simulated contact center, so it can be tried in any MCP client without a Genesys Cloud account.
 
-<img src="docs/demo.svg" alt="Terminal demo: three read-only tool calls against the demo contact center show live queue status, today's queue performance and the abandoned calls in Billing, with customer data masked" width="100%">
+<img src="docs/demo.svg" alt="Terminal demo: four read-only tool calls against the demo contact center show live queue status, today's queue performance, the abandoned calls in Billing with customer data masked, and how the Billing agents spent their time" width="100%">
 
-<sub>Three tool calls against the demo contact center, shown as tables by `npm run try`. The model receives the same data as JSON.</sub>
+<sub>Four tool calls against the demo contact center, shown as tables by `npm run try`. The model receives the same data as JSON.</sub>
 
 ## What you can ask
 
@@ -21,28 +21,66 @@ This is a [Model Context Protocol](https://modelcontextprotocol.io) server that 
 - Who handled the most interactions this week and what is their average handle time?
 - Show me the abandoned chats from the last 4 hours that waited more than two minutes.
 - Walk me through conversation `284d0a28-...`: how long did the customer wait, was there a hold, how did it end?
+- Is Billing doing better or worse than last Tuesday at this time?
+- How much of the morning were the Billing agents actually on queue, and when did they take lunch?
+- What was Karen doing between 10:00 and 11:00?
+- How many callers finished in the IVR without talking to anyone, and how many hung up in the menus?
+- Are we open on the 2nd of November? When do we close today?
+- What wrap-up codes did Retention use this week, and how often did they save the cancellation?
 
 ## Tools
+
+Queues
 
 | Tool | What it returns | API used |
 | --- | --- | --- |
 | `list_queues` | Queues and member counts | `GET /api/v2/routing/queues` |
+| `get_queue` | Configuration of one queue: service level target, alerting timeout, after-call work, skill evaluation, wrap-up codes, and its members with skills and current status | `GET /api/v2/routing/queues/{id}`, `.../wrapupcodes`, `.../members` |
 | `get_queue_status` | Waiting, longest wait, interacting, agents on queue by routing status | `POST /api/v2/analytics/queues/observations/query` |
 | `get_queue_performance` | Offered, answered, abandoned, abandon rate, service level, ASA, handle, talk, hold and ACW averages; optional time buckets | `POST /api/v2/analytics/conversations/aggregates/query` |
+| `compare_queue_performance` | The same metrics for two intervals and the change, by default against the same interval a week earlier | `POST /api/v2/analytics/conversations/aggregates/query` |
+
+Agents
+
+| Tool | What it returns | API used |
+| --- | --- | --- |
 | `list_agents` | Agents with presence and routing status, filtered by queue, status or name | `GET /api/v2/users`, `GET /api/v2/routing/queues/{id}/members` |
+| `get_agent` | One agent: queues, skills, languages, current status, and today's interactions and time by status | `GET /api/v2/users/{id}`, `GET /api/v2/users/{id}/queues`, conversation and user aggregates |
 | `get_agent_performance` | Handled interactions and average handle, talk, hold and ACW per agent | `POST /api/v2/analytics/conversations/aggregates/query` |
+| `get_agent_status_summary` | Minutes logged in, on queue, idle, interacting and off queue by presence (break, meal, meeting...), on-queue share and occupancy, per agent and for the team | `POST /api/v2/analytics/users/aggregates/query` |
+| `get_agent_timeline` | Status changes of one agent with durations, and the interactions handled, for up to seven days | `POST /api/v2/analytics/users/details/query`, conversation details |
+
+Conversations
+
+| Tool | What it returns | API used |
+| --- | --- | --- |
 | `search_conversations` | One line per conversation, filtered by queue, agent, media type, direction, outcome, wait or duration | `POST /api/v2/analytics/conversations/details/query` |
 | `get_conversation` | Timeline of one conversation: queue time, talk, hold, after-call work, wrap-up, who disconnected | `GET /api/v2/analytics/conversations/{id}/details` |
+| `get_wrapup_summary` | Count, share and average handle time per wrap-up code, for a queue, an agent or the center | `POST /api/v2/analytics/conversations/aggregates/query` |
 
-There is also a `queue_health_report` prompt that asks the model to combine the live status and today's hourly trend into a short report.
+Flows and opening hours
 
-Queues and agents can be given by name; partial names work (`"chat"` finds `Chat Support`). Intervals accept `today`, `yesterday`, `this_week`, `last 30m`, `last 4h`, `last 7d` or an ISO-8601 interval. Calendar words use `GENESYS_TIMEZONE`.
+| Tool | What it returns | API used |
+| --- | --- | --- |
+| `get_flow_performance` | Per inbound flow (IVR, chat bot): entered, transferred to a queue, ended in the flow, time in the flow and flow outcomes; optional time buckets | `GET /api/v2/flows`, `POST /api/v2/analytics/flows/aggregates/query` |
+| `get_schedule_status` | Whether each schedule group is open, closed or on a holiday now or at a given time, which schedule decides it, the next change and the holidays in the next 60 days | `GET /api/v2/architect/schedulegroups`, `GET /api/v2/architect/schedules` |
 
-Results are JSON with names instead of ids, durations in seconds and rates as percentages, so the model does not have to convert milliseconds or look up ids.
+Prompts combine the tools for common tasks:
+
+| Prompt | What it asks for |
+| --- | --- |
+| `queue_health_report` | Live status and today's hourly trend, with the queues to act on |
+| `daily_summary` | A day compared with the same day a week earlier: volumes, service level, abandons, the IVR and wrap-up codes |
+| `agent_review` | Notes for a one-to-one: volume, handle time against the team, time on queue, occupancy and wrap-up codes |
+| `abandon_investigation` | When a queue lost calls, how long callers waited, staffing at that time and what the IVR did |
+
+Queues, agents and flows can be given by name; partial names work (`"chat"` finds `Chat Support`). Intervals accept `today`, `yesterday`, `this_week`, `last 30m`, `last 4h`, `last 7d` or an ISO-8601 interval. Calendar words use `GENESYS_TIMEZONE`.
+
+Results are JSON with names instead of ids, durations in seconds (or minutes where the field says so) and rates as percentages, so the model does not have to convert milliseconds or look up ids.
 
 ## Try it with the demo contact center
 
-The demo is a fictional center with six queues (voice and chat) and 25 agents. Calls arrive on a daily curve and are routed to the first free agent who is on shift, so waits, abandons and service level come out of the load and staffing. History covers the last five weeks and live status changes as the day goes on.
+The demo is a fictional center with six queues (voice and chat), 25 agents and three entry flows. Calls arrive on a daily curve, go through the IVR or the chat bot, and are routed to the first free agent who is on shift and not on lunch or a break, so waits, abandons and service level come out of the load and staffing. Some callers finish in self-service or hang up in the menus, and outside opening hours they hear the closed message. The opening hours have weekday and weekend schedules, a closed slot for a team meeting and the local holidays. History covers the last five weeks and live status changes as the day goes on.
 
 In Claude Desktop, add this to `claude_desktop_config.json`:
 
@@ -82,16 +120,16 @@ This is what the model receives from `get_queue_performance` for the demo Billin
     {
       "queue": "Billing",
       "offered": 79,
-      "answered": 53,
-      "abandoned": 26,
-      "abandonRatePercent": 32.9,
-      "serviceLevelPercent": 49.3,
-      "avgSpeedOfAnswerSeconds": 28,
+      "answered": 54,
+      "abandoned": 25,
+      "abandonRatePercent": 31.6,
+      "serviceLevelPercent": 48.6,
+      "avgSpeedOfAnswerSeconds": 29,
       "longestWaitSeconds": 206,
-      "avgAbandonSeconds": 60,
-      "avgHandleSeconds": 335,
-      "avgTalkSeconds": 284,
-      "avgHoldSeconds": 56,
+      "avgAbandonSeconds": 66,
+      "avgHandleSeconds": 334,
+      "avgTalkSeconds": 281,
+      "avgHoldSeconds": 67,
       "avgAcwSeconds": 38,
       "transferred": 0
     }
@@ -105,8 +143,15 @@ This is what the model receives from `get_queue_performance` for the demo Billin
    - `analytics:conversationAggregate:view`
    - `analytics:conversationDetail:view`
    - `analytics:queueObservation:view`
+   - `analytics:userAggregate:view`
+   - `analytics:userDetail:view`
+   - `analytics:flowAggregate:view`
    - `routing:queue:view`
    - `routing:wrapupCode:view`
+   - `routing:skill:view`
+   - `architect:flow:view`
+   - `architect:schedule:view`
+   - `architect:scheduleGroup:view`
    - permission to view users, their presence and routing status
 
    Permission names change from time to time; check them in Admin > Roles / Permissions. A 403 from a tool tells you which request was refused.
@@ -143,7 +188,7 @@ This is what the model receives from `get_queue_performance` for the demo Billin
 
 | Concern | Handling |
 | --- | --- |
-| The assistant changes something in the org | Every request goes through one check that allows `GET` and the four analytics query endpoints and refuses anything else before it is sent. The OAuth role, with view permissions only, is the second layer. |
+| The assistant changes something in the org | Every request goes through one check that allows `GET` and the six analytics query endpoints and refuses anything else before it is sent. The OAuth role, with view permissions only, is the second layer. |
 | Customer data reaches the model | Masked by default: phone numbers keep the last four digits (`+1•••4567`), emails keep the first letter and the domain, customer names become initials. Agent names are shown. `GENESYS_REDACT=false` turns it off. |
 | Credentials leak | They are read from the environment and are not logged or returned in tool results. |
 | Rate limits | 429 and 5xx responses are retried with `Retry-After` or exponential backoff, up to three times. An expired token is refreshed once. |
@@ -165,10 +210,13 @@ await server.connect(new StdioServerTransport());
 
 ## Limits
 
-- Directory lookups (queues, users, wrap-up codes) read up to 2,000 entries each and are cached for five minutes.
+- Directory lookups (queues, users, wrap-up codes, flows) read up to 2,000 entries each and are cached for five minutes.
 - `search_conversations` returns at most 100 conversations per call and uses the synchronous details query, which Genesys Cloud limits to recent intervals. Large exports belong in an analytics job, not in a chat.
 - Service level is reported as computed by Genesys Cloud for each queue; the 20 second target shown in results is the demo's setting.
 - Queue observations are per queue. An agent who is a member of several queues is counted in each.
+- `get_agent_timeline` reads up to 100 interactions per call and covers at most seven days.
+- `get_schedule_status` evaluates schedules itself. It understands one-off schedules and RRULEs with `FREQ` daily, weekly (`BYDAY`), monthly (`BYMONTHDAY`) or yearly, `INTERVAL` and `UNTIL`; other rule parts are ignored. The next change is found to the minute within eight days.
+- `endedInFlow` in `get_flow_performance` does not separate self-service from callers who hung up; flow outcomes do, if the flows set them.
 
 ## Design decisions
 

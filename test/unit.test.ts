@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assertReadOnly, HttpPlatformClient, maskAddress, maskName, PlatformError, resolveInterval } from '../src/index.js';
+import { assertReadOnly, covers, evaluate, HttpPlatformClient, maskAddress, maskName, PlatformError, resolveInterval } from '../src/index.js';
 
 describe('resolveInterval', () => {
   const now = new Date('2026-10-21T16:30:00Z');
@@ -52,9 +52,50 @@ describe('read-only guard', () => {
   it('allows GET and the analytics queries only', () => {
     expect(() => assertReadOnly('GET', '/api/v2/routing/queues')).not.toThrow();
     expect(() => assertReadOnly('POST', '/api/v2/analytics/conversations/details/query')).not.toThrow();
+    expect(() => assertReadOnly('POST', '/api/v2/analytics/users/details/query')).not.toThrow();
+    expect(() => assertReadOnly('POST', '/api/v2/analytics/flows/aggregates/query')).not.toThrow();
+    expect(() => assertReadOnly('POST', '/api/v2/architect/schedules')).toThrow(/read-only/);
     expect(() => assertReadOnly('POST', '/api/v2/routing/queues')).toThrow(PlatformError);
     expect(() => assertReadOnly('POST', '/api/v2/conversations/calls')).toThrow(/read-only/);
     expect(() => assertReadOnly('DELETE' as never, '/api/v2/users/1')).toThrow();
+  });
+});
+
+describe('schedules', () => {
+  const at = (s: string) => Date.parse(`${s}Z`);
+  it('weekly rules with BYDAY and an interval', () => {
+    const weekdays = { id: '1', name: 'w', start: '2026-01-05T08:00:00.000', end: '2026-01-05T20:00:00.000', rrule: 'FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR' };
+    expect(covers(weekdays, at('2026-10-21T08:00:00'))).toBe(true);
+    expect(covers(weekdays, at('2026-10-21T20:00:00'))).toBe(false);
+    expect(covers(weekdays, at('2026-10-24T10:00:00'))).toBe(false); // Saturday
+    expect(covers(weekdays, at('2025-12-31T10:00:00'))).toBe(false); // before the start
+    const fortnight = { ...weekdays, rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=MO' };
+    expect(covers(fortnight, at('2026-01-19T09:00:00'))).toBe(true);
+    expect(covers(fortnight, at('2026-01-12T09:00:00'))).toBe(false);
+  });
+
+  it('daily, monthly, yearly, UNTIL and schedules past midnight', () => {
+    const night = { id: '1', name: 'n', start: '2026-01-01T22:00:00.000', end: '2026-01-02T06:00:00.000', rrule: 'FREQ=DAILY' };
+    expect(covers(night, at('2026-10-21T03:00:00'))).toBe(true);
+    expect(covers(night, at('2026-10-21T12:00:00'))).toBe(false);
+    const monthly = { id: '2', name: 'm', start: '2026-01-15T00:00:00.000', end: '2026-01-16T00:00:00.000', rrule: 'FREQ=MONTHLY;BYMONTHDAY=15' };
+    expect(covers(monthly, at('2026-10-15T12:00:00'))).toBe(true);
+    const christmas = { id: '3', name: 'c', start: '2025-12-25T00:00:00.000', end: '2025-12-26T00:00:00.000', rrule: 'FREQ=YEARLY' };
+    expect(covers(christmas, at('2027-12-25T09:00:00'))).toBe(true);
+    expect(covers({ ...christmas, rrule: 'FREQ=YEARLY;UNTIL=20261231T000000Z' }, at('2027-12-25T09:00:00'))).toBe(false);
+  });
+
+  it('holiday wins over closed, closed over open, in the group time zone', () => {
+    const schedules = new Map([
+      ['o', { id: 'o', name: 'Open', start: '2026-01-01T08:00:00.000', end: '2026-01-01T20:00:00.000', rrule: 'FREQ=DAILY' }],
+      ['c', { id: 'c', name: 'Training', start: '2026-10-21T08:00:00.000', end: '2026-10-21T09:00:00.000' }],
+      ['h', { id: 'h', name: 'Holiday', start: '2026-10-22T00:00:00.000', end: '2026-10-23T00:00:00.000' }],
+    ]);
+    const group = { id: 'g', name: 'G', openSchedules: [{ id: 'o' }], closedSchedules: [{ id: 'c' }], holidaySchedules: [{ id: 'h' }] };
+    expect(evaluate(group, schedules, Date.parse('2026-10-21T13:30:00Z'), 'America/Bogota')).toEqual({ state: 'closed', schedule: 'Training' });
+    expect(evaluate(group, schedules, Date.parse('2026-10-21T14:30:00Z'), 'America/Bogota')).toEqual({ state: 'open', schedule: 'Open' });
+    expect(evaluate(group, schedules, Date.parse('2026-10-22T15:00:00Z'), 'America/Bogota')).toEqual({ state: 'holiday', schedule: 'Holiday' });
+    expect(evaluate(group, schedules, Date.parse('2026-10-21T02:00:00Z'), 'America/Bogota').state).toBe('closed');
   });
 });
 

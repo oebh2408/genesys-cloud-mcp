@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { PlatformClient } from './client/types.js';
 import { Directory, type Named } from './directory.js';
 import { maskAddress, maskName } from './redact.js';
-import { resolveInterval } from './time.js';
+import { evaluate, formatLocal, nextChange, upcomingHolidays, type Schedule, type ScheduleGroup } from './schedule.js';
+import { resolveInterval, type ResolvedInterval } from './time.js';
 
 export interface ToolContext {
   client: PlatformClient;
@@ -76,6 +77,14 @@ interface Conversation {
   participants?: Participant[];
 }
 
+type UserEntity = Named & {
+  department?: string;
+  presence?: { presenceDefinition?: { systemPresence?: string } };
+  routingStatus?: { status?: string };
+  skills?: { name: string; proficiency?: number }[];
+  languages?: { name: string; proficiency?: number }[];
+};
+
 // ---- tools -------------------------------------------------------------------------------
 
 export const tools = [
@@ -88,6 +97,59 @@ export const tools = [
       const needle = name?.toLowerCase();
       const queues = (await directory.queues()).filter((q) => !needle || q.name.toLowerCase().includes(needle));
       return { count: queues.length, queues: queues.map((q) => ({ id: q.id, name: q.name, description: q.description, members: q.memberCount })) };
+    },
+  }),
+
+  define({
+    name: 'get_queue',
+    title: 'Queue configuration',
+    description:
+      'Configuration of one queue: media, service level target, alerting timeout, after-call work, skill evaluation, wrap-up codes, and its members with their skills and current status.',
+    input: { queue: z.string().describe('Queue name or id') },
+    async run({ queue }, ctx) {
+      const [target] = await ctx.directory.resolveQueues([queue]);
+      type QueueEntity = {
+        id: string;
+        name: string;
+        description?: string;
+        memberCount?: number;
+        joinedMemberCount?: number;
+        mediaSettings?: Record<string, { alertingTimeoutSeconds?: number; serviceLevel?: { percentage?: number; durationMs?: number } }>;
+        acwSettings?: { wrapupPrompt?: string; timeoutMs?: number };
+        skillEvaluationMethod?: string;
+        dateModified?: string;
+      };
+      type Member = { id: string; name: string; joined?: boolean; user?: UserEntity; routingStatus?: { status?: string } };
+      const [q, wrapups, members] = await Promise.all([
+        ctx.client.request<QueueEntity>('GET', `/api/v2/routing/queues/${target!.id}`),
+        pages<Named>(ctx.client, `/api/v2/routing/queues/${target!.id}/wrapupcodes`, {}),
+        pages<Member>(ctx.client, `/api/v2/routing/queues/${target!.id}/members`, { expand: 'presence,routingStatus,skills' }),
+      ]);
+      const agents = members
+        .map((m) => ({
+          name: m.user?.name ?? m.name,
+          joined: m.joined ?? true,
+          presence: m.user?.presence?.presenceDefinition?.systemPresence ?? 'Unknown',
+          routingStatus: m.routingStatus?.status ?? m.user?.routingStatus?.status ?? 'OFF_QUEUE',
+          skills: (m.user?.skills ?? []).map((k) => `${k.name} ${k.proficiency ?? ''}`.trim()),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return {
+        queue: q.name,
+        description: q.description,
+        media: Object.entries(q.mediaSettings ?? {}).map(([media, m]) => ({
+          media,
+          serviceLevelPercent: m.serviceLevel?.percentage !== undefined ? Math.round(m.serviceLevel.percentage * 100) : undefined,
+          serviceLevelSeconds: m.serviceLevel?.durationMs !== undefined ? Math.round(m.serviceLevel.durationMs / 1000) : undefined,
+          alertingTimeoutSeconds: m.alertingTimeoutSeconds,
+        })),
+        afterCallWork: q.acwSettings ? { mode: q.acwSettings.wrapupPrompt, timeoutSeconds: q.acwSettings.timeoutMs !== undefined ? Math.round(q.acwSettings.timeoutMs / 1000) : undefined } : undefined,
+        skillEvaluation: q.skillEvaluationMethod,
+        lastModified: q.dateModified,
+        wrapUpCodes: wrapups.map((w) => w.name),
+        members: { total: agents.length, joined: agents.filter((a) => a.joined).length, onQueueNow: agents.filter((a) => a.presence === 'On Queue').length },
+        agents,
+      };
     },
   }),
 
@@ -144,33 +206,47 @@ export const tools = [
     async run({ queues, interval, granularity }, ctx) {
       const range = resolveInterval(interval, ctx.now(), ctx.timeZone);
       const targets = queues?.length ? await ctx.directory.resolveQueues(queues) : await ctx.directory.queues();
-      const res = await ctx.client.request<AggregateResult>('POST', '/api/v2/analytics/conversations/aggregates/query', {
-        body: {
-          interval: range.iso,
-          groupBy: ['queueId'],
-          ...(granularity ? { granularity } : {}),
-          filter: { type: 'or', predicates: targets.map((q) => ({ dimension: 'queueId', value: q.id })) },
-          metrics: ['nOffered', 'tAnswered', 'tAbandon', 'tWait', 'tHandle', 'tTalk', 'tHeld', 'tAcw', 'nTransferred', 'oServiceLevel'],
-        },
-      });
+      const rows = await queuePerformance(ctx, targets, range.iso, granularity);
+      return { interval: range.iso, timeZone: ctx.timeZone, serviceLevelTargetSeconds: 20, queues: rows.sort((a, b) => b.offered - a.offered) };
+    },
+  }),
 
-      const rows = targets.map((q) => {
-        const buckets = (res.results ?? []).filter((r) => r.group.queueId === q.id).flatMap((r) => r.data ?? []);
-        const summary = summarize(buckets.flatMap((b) => b.metrics));
+  define({
+    name: 'compare_queue_performance',
+    title: 'Compare queue performance',
+    description:
+      'Queue metrics for an interval next to the same metrics for an earlier one, with the change. By default compares with the same interval a week earlier, which keeps the day of the week and the time of day.',
+    input: {
+      queues: queuesArg,
+      interval: intervalArg,
+      compareTo: z
+        .string()
+        .optional()
+        .describe('last_week (default): same interval 7 days earlier; previous: the interval of the same length just before; or an ISO-8601 interval'),
+    },
+    async run({ queues, interval, compareTo }, ctx) {
+      const range = resolveInterval(interval, ctx.now(), ctx.timeZone);
+      const base = comparisonInterval(range, compareTo ?? 'last_week', ctx);
+      const targets = queues?.length ? await ctx.directory.resolveQueues(queues) : await ctx.directory.queues();
+      const [current, previous] = await Promise.all([queuePerformance(ctx, targets, range.iso), queuePerformance(ctx, targets, base)]);
+      const keys = ['offered', 'answered', 'abandoned', 'abandonRatePercent', 'serviceLevelPercent', 'avgSpeedOfAnswerSeconds', 'avgHandleSeconds', 'avgHoldSeconds', 'avgAcwSeconds'] as const;
+      const rows = targets.map((q, i) => {
+        const a = current[i]!;
+        const b = previous[i]!;
         return {
           queue: q.name,
-          ...summary,
-          ...(granularity
-            ? {
-                series: buckets.map((b) => {
-                  const s = summarize(b.metrics);
-                  return { start: b.interval.split('/')[0], offered: s.offered, answered: s.answered, abandoned: s.abandoned, serviceLevelPercent: s.serviceLevelPercent };
-                }),
-              }
-            : {}),
+          ...(Object.fromEntries(
+            keys.map((k) => {
+              const now = a[k];
+              const before = b[k];
+              const change = now === null || before === null ? null : round1(now - before);
+              const percent = typeof now === 'number' && typeof before === 'number' && before !== 0 && !k.endsWith('Percent') ? round1(((now - before) / before) * 100) : undefined;
+              return [k, { current: now, previous: before, change, ...(percent !== undefined ? { changePercent: percent } : {}) }];
+            }),
+          ) as Record<(typeof keys)[number], { current: number | null; previous: number | null; change: number | null; changePercent?: number }>),
         };
       });
-      return { interval: range.iso, timeZone: ctx.timeZone, serviceLevelTargetSeconds: 20, queues: rows.sort((a, b) => b.offered - a.offered) };
+      return { interval: range.iso, comparedWith: base, timeZone: ctx.timeZone, queues: rows.sort((x, y) => (y.offered.current ?? 0) - (x.offered.current ?? 0)) };
     },
   }),
 
@@ -188,7 +264,6 @@ export const tools = [
       limit: z.number().int().min(1).max(500).optional().describe('Default 100'),
     },
     async run({ queue, status, name, limit }, ctx) {
-      type UserEntity = Named & { department?: string; presence?: { presenceDefinition?: { systemPresence?: string } }; routingStatus?: { status?: string } };
       let users: UserEntity[];
       if (queue) {
         const [q] = await ctx.directory.resolveQueues([queue]);
@@ -212,6 +287,45 @@ export const tools = [
         .sort((a, b) => a.name.localeCompare(b.name));
       const max = limit ?? 100;
       return { count: rows.length, ...(rows.length > max ? { truncated: true } : {}), agents: rows.slice(0, max) };
+    },
+  }),
+
+  define({
+    name: 'get_agent',
+    title: 'Agent profile',
+    description: 'One agent: department, current presence and routing status, queues, skills and languages, and a summary of today: interactions handled and time by status.',
+    input: { agent: z.string().describe('Agent name or id') },
+    async run({ agent }, ctx) {
+      const [u] = await ctx.directory.resolveUsers([agent]);
+      const today = resolveInterval('today', ctx.now(), ctx.timeZone);
+      const [user, queues, handled, status] = await Promise.all([
+        ctx.client.request<UserEntity & { email?: string; title?: string }>('GET', `/api/v2/users/${u!.id}`, { query: { expand: 'presence,routingStatus,skills,languages' } }),
+        pages<Named & { joined?: boolean }>(ctx.client, `/api/v2/users/${u!.id}/queues`, {}),
+        ctx.client.request<AggregateResult>('POST', '/api/v2/analytics/conversations/aggregates/query', {
+          body: { interval: today.iso, groupBy: ['userId'], filter: { type: 'or', predicates: [{ dimension: 'userId', value: u!.id }] }, metrics: ['tHandle', 'tTalk', 'tHeld', 'tAcw'] },
+        }),
+        statusTimes(ctx, [u!.id], today.iso),
+      ]);
+      const metrics = (handled.results ?? []).flatMap((r) => r.data ?? []).flatMap((d) => d.metrics);
+      const handle = stat(metrics, 'tHandle');
+      return {
+        agent: user.name,
+        title: user.title,
+        department: user.department,
+        presence: user.presence?.presenceDefinition?.systemPresence ?? 'Unknown',
+        routingStatus: user.routingStatus?.status ?? 'OFF_QUEUE',
+        queues: queues.map((q) => ({ queue: q.name, joined: q.joined ?? true })),
+        skills: (user.skills ?? []).map((k) => ({ skill: k.name, proficiency: k.proficiency })),
+        languages: (user.languages ?? []).map((l) => ({ language: l.name, proficiency: l.proficiency })),
+        today: {
+          interval: today.iso,
+          handled: handle.count ?? 0,
+          avgHandleSeconds: avgSeconds(handle),
+          avgHoldSeconds: avgSeconds(stat(metrics, 'tHeld')),
+          avgAcwSeconds: avgSeconds(stat(metrics, 'tAcw')),
+          ...(status.get(u!.id) ?? emptyStatus()),
+        },
+      };
     },
   }),
 
@@ -269,6 +383,105 @@ export const tools = [
       rows.sort((a, b) => b.handled - a.handled);
       const max = limit ?? 25;
       return { interval: range.iso, timeZone: ctx.timeZone, count: rows.length, agents: rows.slice(0, max) };
+    },
+  }),
+
+  define({
+    name: 'get_agent_status_summary',
+    title: 'Agent status summary',
+    description:
+      'Time each agent spent logged in, on queue, idle, interacting, and off queue by presence (break, meal, meeting, away...) in an interval, with occupancy (interacting time over on-queue time). Use it for adherence and staffing questions.',
+    input: {
+      agents: z.array(z.string()).optional().describe('Agent names or ids'),
+      queue: z.string().optional().describe('Only members of this queue'),
+      interval: intervalArg,
+      limit: z.number().int().min(1).max(200).optional().describe('Default 50'),
+    },
+    async run({ agents, queue, interval, limit }, ctx) {
+      const range = resolveInterval(interval, ctx.now(), ctx.timeZone);
+      let users: Named[];
+      if (agents?.length) users = await ctx.directory.resolveUsers(agents);
+      else if (queue) {
+        const [q] = await ctx.directory.resolveQueues([queue]);
+        users = (await pages<{ id: string; name: string; user?: Named }>(ctx.client, `/api/v2/routing/queues/${q!.id}/members`, {})).map((m) => ({ id: m.user?.id ?? m.id, name: m.user?.name ?? m.name }));
+      } else users = await ctx.directory.users();
+      const times = await statusTimes(ctx, users.map((u) => u.id), range.iso);
+      const rows = users
+        .map((u) => ({ agent: u.name, ...(times.get(u.id) ?? emptyStatus()) }))
+        .filter((r) => r.loggedInMinutes > 0)
+        .sort((a, b) => a.agent.localeCompare(b.agent));
+      const max = limit ?? 50;
+      const total = (k: 'onQueueMinutes' | 'interactingMinutes' | 'idleMinutes') => rows.reduce((n, r) => n + r[k], 0);
+      return {
+        interval: range.iso,
+        timeZone: ctx.timeZone,
+        team: {
+          agentsLoggedIn: rows.length,
+          onQueueMinutes: total('onQueueMinutes'),
+          occupancyPercent: total('interactingMinutes') + total('idleMinutes') ? round1((total('interactingMinutes') / (total('interactingMinutes') + total('idleMinutes'))) * 100) : null,
+        },
+        count: rows.length,
+        ...(rows.length > max ? { truncated: true } : {}),
+        agents: rows.slice(0, max),
+      };
+    },
+  }),
+
+  define({
+    name: 'get_agent_timeline',
+    title: 'Agent timeline',
+    description:
+      'Status changes of one agent in an interval, with durations, and the interactions they handled. Use it to see what an agent was doing at a given time. By default on-queue time is one block; detail "routing" splits it into idle and interacting.',
+    input: {
+      agent: z.string().describe('Agent name or id'),
+      interval: intervalArg,
+      detail: z.enum(['presence', 'routing']).optional().describe('presence (default) or routing'),
+    },
+    async run({ agent, interval, detail }, ctx) {
+      const range = resolveInterval(interval, ctx.now(), ctx.timeZone);
+      if (range.end.getTime() - range.start.getTime() > 7 * 86_400_000) throw new Error('The timeline covers at most 7 days. Use get_agent_status_summary for longer intervals.');
+      const [u] = await ctx.directory.resolveUsers([agent]);
+      type Period = { startTime: string; endTime?: string; systemPresence?: string; routingStatus?: string };
+      const [details, convs] = await Promise.all([
+        ctx.client.request<{ userDetails?: { userId: string; primaryPresence?: Period[]; routingStatus?: Period[] }[] }>('POST', '/api/v2/analytics/users/details/query', {
+          body: { interval: range.iso, order: 'asc', userFilters: [{ type: 'or', predicates: [{ dimension: 'userId', value: u!.id }] }], paging: { pageSize: 100, pageNumber: 1 } },
+        }),
+        ctx.client.request<{ conversations?: Conversation[]; totalHits?: number }>('POST', '/api/v2/analytics/conversations/details/query', {
+          body: { interval: range.iso, order: 'asc', orderBy: 'conversationStart', paging: { pageSize: 100, pageNumber: 1 }, segmentFilters: [{ type: 'and', predicates: [{ dimension: 'userId', value: u!.id }] }] },
+        }),
+      ]);
+      const d = details.userDetails?.find((x) => x.userId === u!.id);
+      const end = Math.min(range.end.getTime(), ctx.now().getTime());
+      const presence = (d?.primaryPresence ?? []).map((p) => ({ start: Date.parse(p.startTime), end: p.endTime ? Date.parse(p.endTime) : end, value: presenceLabel(p.systemPresence) }));
+      const routing = (d?.routingStatus ?? []).map((p) => ({ start: Date.parse(p.startTime), end: p.endTime ? Date.parse(p.endTime) : end, value: p.routingStatus ?? 'OFF_QUEUE' }));
+      const cuts = [...new Set([...presence, ...routing].flatMap((p) => [p.start, p.end]))].sort((a, b) => a - b);
+      const at = (list: { start: number; end: number; value: string }[], t: number) => list.find((p) => p.start <= t && t < p.end)?.value;
+      const timeline: { start: string; end: string; minutes: number; presence: string; routingStatus: string }[] = [];
+      for (let i = 0; i < cuts.length - 1; i++) {
+        const p = at(presence, cuts[i]!) ?? 'Offline';
+        const r = p !== 'On Queue' ? 'OFF_QUEUE' : detail === 'routing' ? (at(routing, cuts[i]!) ?? 'OFF_QUEUE') : 'ON_QUEUE';
+        const last = timeline.at(-1);
+        if (last && last.presence === p && last.routingStatus === r) {
+          last.end = new Date(cuts[i + 1]!).toISOString();
+        } else timeline.push({ start: new Date(cuts[i]!).toISOString(), end: new Date(cuts[i + 1]!).toISOString(), minutes: 0, presence: p, routingStatus: r });
+      }
+      for (const t of timeline) {
+        t.minutes = round1((Date.parse(t.end) - Date.parse(t.start)) / 60_000);
+        t.start = t.start.replace(/\.\d{3}Z$/, 'Z');
+        t.end = t.end.replace(/\.\d{3}Z$/, 'Z');
+      }
+      const conversations = await Promise.all((convs.conversations ?? []).map((c) => summarizeConversation(c, ctx)));
+      return {
+        agent: u!.name,
+        interval: range.iso,
+        timeZone: ctx.timeZone,
+        // Offline stretches at the edges say nothing; keep the ones between logins.
+        timeline: trimOffline(timeline).map(({ routingStatus, ...t }) => (detail === 'routing' ? { ...t, routingStatus } : t)),
+        interactions: {
+          total: convs.totalHits ?? conversations.length,
+          list: conversations.map((c) => ({ conversationId: c.conversationId, start: c.start, queue: c.queue, mediaType: c.mediaType, direction: c.direction, handleSeconds: c.handleSeconds, wrapUp: c.wrapUp })),
+        },
+      };
     },
   }),
 
@@ -365,9 +578,264 @@ export const tools = [
       };
     },
   }),
+
+  define({
+    name: 'get_wrapup_summary',
+    title: 'Wrap-up codes',
+    description: 'How handled interactions were closed: count, share and average handle time per wrap-up code, for a queue, an agent or the whole center.',
+    input: {
+      queue: z.string().optional(),
+      agent: z.string().optional(),
+      interval: intervalArg,
+    },
+    async run({ queue, agent, interval }, ctx) {
+      const range = resolveInterval(interval, ctx.now(), ctx.timeZone);
+      const predicates: unknown[] = [];
+      if (queue) {
+        const [q] = await ctx.directory.resolveQueues([queue]);
+        predicates.push({ dimension: 'queueId', value: q!.id });
+      }
+      if (agent) {
+        const [u] = await ctx.directory.resolveUsers([agent]);
+        predicates.push({ dimension: 'userId', value: u!.id });
+      }
+      const res = await ctx.client.request<AggregateResult>('POST', '/api/v2/analytics/conversations/aggregates/query', {
+        body: { interval: range.iso, groupBy: ['wrapUpCode'], ...(predicates.length ? { filter: { type: 'and', predicates } } : {}), metrics: ['tHandle'] },
+      });
+      const groups = (res.results ?? []).filter((r) => r.group.wrapUpCode);
+      const rows = await Promise.all(
+        groups.map(async (r) => {
+          const handle = stat((r.data ?? []).flatMap((d) => d.metrics), 'tHandle');
+          return { wrapUp: (await ctx.directory.wrapupName(r.group.wrapUpCode)) ?? r.group.wrapUpCode!, count: handle.count ?? 0, avgHandleSeconds: avgSeconds(handle) };
+        }),
+      );
+      const total = rows.reduce((n, r) => n + r.count, 0);
+      return {
+        interval: range.iso,
+        ...(queue ? { queue: await ctx.directory.queueName((predicates[0] as { value: string }).value) } : {}),
+        ...(agent ? { agent: await ctx.directory.userName((predicates.at(-1) as { value: string }).value) } : {}),
+        total,
+        wrapUps: rows.map((r) => ({ ...r, percent: total ? round1((r.count / total) * 100) : 0 })).sort((a, b) => b.count - a.count),
+      };
+    },
+  }),
+
+  define({
+    name: 'get_flow_performance',
+    title: 'IVR and flow performance',
+    description:
+      'Architect inbound flows (IVR, chat bot) for an interval: how many entered, how many were transferred out to a queue, how many ended inside the flow (self-service, hang-ups in the menus, closed messages), average time in the flow and flow outcomes. Optionally split into time buckets.',
+    input: {
+      flows: z.array(z.string()).optional().describe('Flow names or ids. Omit for all inbound flows.'),
+      interval: intervalArg,
+      granularity: z.enum(['PT15M', 'PT30M', 'PT1H', 'P1D']).optional(),
+    },
+    async run({ flows, interval, granularity }, ctx) {
+      const range = resolveInterval(interval, ctx.now(), ctx.timeZone);
+      const all = await ctx.directory.flows();
+      const targets = flows?.length ? await ctx.directory.resolveFlows(flows) : all.filter((f) => !f.type || /^inbound/i.test(f.type));
+      if (!targets.length) return { interval: range.iso, flows: [] };
+      const res = await ctx.client.request<AggregateResult>('POST', '/api/v2/analytics/flows/aggregates/query', {
+        body: {
+          interval: range.iso,
+          groupBy: ['flowId'],
+          ...(granularity ? { granularity } : {}),
+          filter: { type: 'or', predicates: targets.map((f) => ({ dimension: 'flowId', value: f.id })) },
+          metrics: ['nFlow', 'tFlow', 'tFlowExit', 'tFlowDisconnect', 'nFlowOutcome', 'nFlowOutcomeFailed'],
+        },
+      });
+      const sum = (metrics: { metric: string; stats: Stat }[]) => {
+        const entered = stat(metrics, 'nFlow').count ?? 0;
+        const exit = stat(metrics, 'tFlowExit');
+        const disconnect = stat(metrics, 'tFlowDisconnect');
+        return {
+          entered,
+          transferredOut: exit.count ?? 0,
+          endedInFlow: disconnect.count ?? 0,
+          endedInFlowPercent: entered ? round1(((disconnect.count ?? 0) / entered) * 100) : null,
+          avgSecondsInFlow: avgSeconds(stat(metrics, 'tFlow')),
+          avgSecondsBeforeTransfer: avgSeconds(exit),
+          outcomesSucceeded: stat(metrics, 'nFlowOutcome').count ?? 0,
+          outcomesFailed: stat(metrics, 'nFlowOutcomeFailed').count ?? 0,
+        };
+      };
+      const rows = targets.map((f) => {
+        const buckets = (res.results ?? []).filter((r) => r.group.flowId === f.id).flatMap((r) => r.data ?? []);
+        return {
+          flow: f.name,
+          type: all.find((x) => x.id === f.id)?.type,
+          ...sum(buckets.flatMap((b) => b.metrics)),
+          ...(granularity ? { series: buckets.map((b) => ({ start: b.interval.split('/')[0], ...sum(b.metrics) })) } : {}),
+        };
+      });
+      return {
+        interval: range.iso,
+        timeZone: ctx.timeZone,
+        note: 'endedInFlow counts every session that ended inside the flow: finished in self-service, hung up in the menus, or heard a closed message. outcomesSucceeded counts flow outcomes marked as successful, usually self-service.',
+        flows: rows.sort((a, b) => b.entered - a.entered),
+      };
+    },
+  }),
+
+  define({
+    name: 'get_schedule_status',
+    title: 'Opening hours',
+    description:
+      'Whether each Architect schedule group is open, closed or on a holiday at a given time (now by default), which schedule decides it, when it changes next, and the holidays in the next 60 days.',
+    input: {
+      scheduleGroup: z.string().optional().describe('Schedule group name, partial match. Omit for all.'),
+      at: z.string().optional().describe('ISO-8601 date-time to check instead of now'),
+    },
+    async run({ scheduleGroup, at }, ctx) {
+      const when = at ? Date.parse(at) : ctx.now().getTime();
+      if (Number.isNaN(when)) throw new Error(`Invalid date-time '${at}'.`);
+      const [groups, schedules] = await Promise.all([
+        pages<ScheduleGroup>(ctx.client, '/api/v2/architect/schedulegroups', {}),
+        pages<Schedule>(ctx.client, '/api/v2/architect/schedules', {}),
+      ]);
+      const byId = new Map(schedules.map((x) => [x.id, x]));
+      const needle = scheduleGroup?.toLowerCase();
+      const selected = groups.filter((g) => !needle || g.name.toLowerCase().includes(needle));
+      if (needle && !selected.length) throw new Error(`No schedule group matches '${scheduleGroup}'. Known schedule groups: ${groups.map((g) => g.name).join(', ')}.`);
+      return {
+        at: new Date(when).toISOString(),
+        scheduleGroups: selected.map((g) => {
+          const tz = g.timeZone ?? ctx.timeZone;
+          const now = evaluate(g, byId, when, tz);
+          const next = nextChange(g, byId, when, tz);
+          return {
+            scheduleGroup: g.name,
+            timeZone: tz,
+            localTime: formatLocal(when, tz),
+            status: now.state,
+            schedule: now.schedule,
+            nextChange: next ? { at: new Date(next.at).toISOString(), localTime: formatLocal(next.at, tz), status: next.state, schedule: next.schedule } : null,
+            upcomingHolidays: upcomingHolidays(g, byId, when, tz),
+          };
+        }),
+      };
+    },
+  }),
 ];
 
 // ---- helpers -----------------------------------------------------------------------------
+
+async function queuePerformance(ctx: ToolContext, targets: Named[], interval: string, granularity?: string) {
+  const res = await ctx.client.request<AggregateResult>('POST', '/api/v2/analytics/conversations/aggregates/query', {
+    body: {
+      interval,
+      groupBy: ['queueId'],
+      ...(granularity ? { granularity } : {}),
+      filter: { type: 'or', predicates: targets.map((q) => ({ dimension: 'queueId', value: q.id })) },
+      metrics: ['nOffered', 'tAnswered', 'tAbandon', 'tWait', 'tHandle', 'tTalk', 'tHeld', 'tAcw', 'nTransferred', 'oServiceLevel'],
+    },
+  });
+  return targets.map((q) => {
+    const buckets = (res.results ?? []).filter((r) => r.group.queueId === q.id).flatMap((r) => r.data ?? []);
+    return {
+      queue: q.name,
+      ...summarize(buckets.flatMap((b) => b.metrics)),
+      ...(granularity
+        ? {
+            series: buckets.map((b) => {
+              const s = summarize(b.metrics);
+              return { start: b.interval.split('/')[0], offered: s.offered, answered: s.answered, abandoned: s.abandoned, serviceLevelPercent: s.serviceLevelPercent };
+            }),
+          }
+        : {}),
+    };
+  });
+}
+
+function comparisonInterval(range: ResolvedInterval, compareTo: string, ctx: ToolContext): string {
+  const length = range.end.getTime() - range.start.getTime();
+  const shift = (ms: number) => `${new Date(range.start.getTime() - ms).toISOString()}/${new Date(range.end.getTime() - ms).toISOString()}`;
+  if (/^last[\s_-]?week$/i.test(compareTo)) return shift(7 * 86_400_000);
+  if (/^previous$/i.test(compareTo)) return shift(length);
+  return resolveInterval(compareTo, ctx.now(), ctx.timeZone).iso;
+}
+
+const PRESENCE_KEYS: Record<string, string> = {
+  BREAK: 'breakMinutes',
+  MEAL: 'mealMinutes',
+  MEETING: 'meetingMinutes',
+  TRAINING: 'trainingMinutes',
+  AWAY: 'awayMinutes',
+  BUSY: 'busyMinutes',
+  AVAILABLE: 'availableMinutes',
+};
+
+function emptyStatus() {
+  return {
+    loggedInMinutes: 0,
+    onQueueMinutes: 0,
+    idleMinutes: 0,
+    interactingMinutes: 0,
+    notRespondingMinutes: 0,
+    offQueueMinutes: 0,
+    onQueuePercent: null as number | null,
+    occupancyPercent: null as number | null,
+    offQueueBy: {} as Record<string, number>,
+  };
+}
+
+/** Time per presence and routing status from the user aggregates, in minutes, per user id. */
+async function statusTimes(ctx: ToolContext, userIds: string[], interval: string) {
+  type Result = { group: Record<string, string>; data?: { metrics: { metric: string; qualifier?: string; stats: Stat }[] }[] };
+  // Filters are sent in chunks to stay under the predicate limit of the analytics API.
+  const chunks = userIds.length ? Array.from({ length: Math.ceil(userIds.length / 100) }, (_, i) => userIds.slice(i * 100, i * 100 + 100)) : [[]];
+  const responses = await Promise.all(
+    chunks.map((ids) =>
+      ctx.client.request<{ results?: Result[] }>('POST', '/api/v2/analytics/users/aggregates/query', {
+        body: {
+          interval,
+          groupBy: ['userId'],
+          ...(ids.length ? { filter: { type: 'or', predicates: ids.map((id) => ({ dimension: 'userId', value: id })) } } : {}),
+          metrics: ['tSystemPresence', 'tAgentRoutingStatus'],
+        },
+      }),
+    ),
+  );
+  const out = new Map<string, ReturnType<typeof emptyStatus>>();
+  for (const r of responses.flatMap((x) => x.results ?? [])) {
+    const metrics = (r.data ?? []).flatMap((d) => d.metrics);
+    const ms = (metric: string, qualifier: string) => metrics.filter((m) => m.metric === metric && m.qualifier === qualifier).reduce((n, m) => n + (m.stats.sum ?? 0), 0);
+    const minutes = (metric: string, qualifier: string) => Math.round(ms(metric, qualifier) / 60_000);
+    const presences = [...new Set(metrics.filter((m) => m.metric === 'tSystemPresence').map((m) => m.qualifier ?? ''))].filter((p) => p && p !== 'OFFLINE');
+    const loggedIn = Math.round(presences.reduce((n, p) => n + ms('tSystemPresence', p), 0) / 60_000);
+    const onQueue = minutes('tSystemPresence', 'ON_QUEUE');
+    const idle = minutes('tAgentRoutingStatus', 'IDLE');
+    const interacting = minutes('tAgentRoutingStatus', 'INTERACTING') + minutes('tAgentRoutingStatus', 'COMMUNICATING');
+    const offQueueBy: Record<string, number> = {};
+    for (const p of presences) if (p !== 'ON_QUEUE' && minutes('tSystemPresence', p)) offQueueBy[PRESENCE_KEYS[p] ?? `${p.toLowerCase()}Minutes`] = minutes('tSystemPresence', p);
+    out.set(r.group.userId!, {
+      loggedInMinutes: loggedIn,
+      onQueueMinutes: onQueue,
+      idleMinutes: idle,
+      interactingMinutes: interacting,
+      notRespondingMinutes: minutes('tAgentRoutingStatus', 'NOT_RESPONDING'),
+      offQueueMinutes: loggedIn - onQueue,
+      onQueuePercent: loggedIn ? round1((onQueue / loggedIn) * 100) : null,
+      occupancyPercent: idle + interacting ? round1((interacting / (idle + interacting)) * 100) : null,
+      offQueueBy,
+    });
+  }
+  return out;
+}
+
+function presenceLabel(system: string | undefined): string {
+  if (!system) return 'Unknown';
+  if (system === 'ON_QUEUE') return 'On Queue';
+  return system.charAt(0) + system.slice(1).toLowerCase().replace(/_/g, ' ');
+}
+
+function trimOffline<T extends { presence: string }>(list: T[]): T[] {
+  let a = 0;
+  let b = list.length;
+  while (a < b && list[a]!.presence === 'Offline') a++;
+  while (b > a && list[b - 1]!.presence === 'Offline') b--;
+  return list.slice(a, b);
+}
 
 async function pages<T>(client: PlatformClient, path: string, query: Record<string, string>): Promise<T[]> {
   const out: T[] = [];

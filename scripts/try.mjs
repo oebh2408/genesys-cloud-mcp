@@ -1,5 +1,5 @@
 // Calls a few tools against the demo contact center and prints the results as tables.
-// Usage: npm run try                          three sample calls
+// Usage: npm run try                          four sample calls
 //        npm run try -- tool '{"arg":"value"}'  one call, raw JSON as the model receives it
 // DEMO_NOW pins the clock (an ISO date), so the output can be reproduced.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -27,7 +27,7 @@ if (tool) {
 function table(headers, rows) {
   const cells = [headers, ...rows].map((r) => r.map(String));
   const widths = headers.map((_, i) => Math.max(...cells.map((r) => r[i].length)));
-  const numeric = headers.map((_, i) => rows.every((r) => /^[\d.]+(%|s|m \d+s)?$/.test(String(r[i]))));
+  const numeric = headers.map((_, i) => rows.every((r) => /^[\d.]+(%|s|m \d+s|h \d+m)?$/.test(String(r[i]))));
   return cells.map((r) => '  ' + r.map((c, i) => (numeric[i] ? c.padStart(widths[i]) : c.padEnd(widths[i]))).join('   ').trimEnd()).join('\n');
 }
 const secs = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`);
@@ -58,5 +58,14 @@ console.log(table(
   found.conversations.map((c) => [time(c.start), c.queue, c.mediaType, secs(c.waitSeconds), c.customer, c.from]),
 ));
 console.log(`\n  ${found.returned} of ${found.totalHits}. Customer names, numbers and addresses are masked by default.`);
+
+input = { queue: 'Billing', interval: 'today' };
+show('get_agent_status_summary', input);
+const team = await call('get_agent_status_summary', input);
+const mins = (m) => `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+console.log(table(
+  ['agent', 'logged in', 'on queue', 'interacting', 'off queue', 'occupancy'],
+  team.agents.map((a) => [a.agent, mins(a.loggedInMinutes), mins(a.onQueueMinutes), mins(a.interactingMinutes), mins(a.offQueueMinutes), `${a.occupancyPercent}%`]),
+));
 
 await client.close();
