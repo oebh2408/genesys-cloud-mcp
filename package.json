@@ -46,6 +46,7 @@
     "start": "node dist/cli.js",
     "demo": "node dist/cli.js --demo",
     "try": "npm run build && node scripts/try.mjs",
+    "demo:svg": "npm run build && node scripts/render-demo.mjs",
     "inspector": "npx -y @modelcontextprotocol/inspector node dist/cli.js --demo",
     "prepare": "npm run build"
   },

@@ -1,12 +1,18 @@
+<img src="docs/diagram.jpg" alt="Genesys Cloud MCP: questions in plain language go in, read-only queries run against the platform, the model gets queue and agent metrics with customer data masked" width="100%">
+
 # genesys-cloud-mcp
 
 [![ci](https://github.com/oebh2408/genesys-cloud-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/oebh2408/genesys-cloud-mcp/actions/workflows/ci.yml)
-![license](https://img.shields.io/badge/license-MIT-blue)
-![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
+![node](https://img.shields.io/badge/node-%E2%89%A520-6FF2C6)
+![license](https://img.shields.io/badge/license-MIT-A98BFF)
 
-A read-only [Model Context Protocol](https://modelcontextprotocol.io) server for Genesys Cloud. It lets an AI assistant answer questions about queues, agents and conversations using the Platform API, without being able to change anything in the org.
+Most questions a supervisor asks about a contact center are simple to say and slow to answer: which queue is losing calls this morning, who handled the most chats yesterday, what happened to a specific call. In Genesys Cloud the answer is usually spread over a few analytics views and filters. An AI assistant with access to the Platform API could answer them directly, but giving it a token that can also change routing, or read every customer's phone number, is not something most teams want.
 
-It ships with a demo contact center, so you can try it in an MCP client without a Genesys Cloud account.
+This is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives the assistant seven tools over queues, agents and conversations, and nothing that writes. Every request goes through a read-only check before it is sent, and customer names, numbers and email addresses are masked by default. It includes a simulated contact center, so it can be tried in any MCP client without a Genesys Cloud account.
+
+<img src="docs/demo.svg" alt="Terminal demo: three read-only tool calls against the demo contact center show live queue status, today's queue performance and the abandoned calls in Billing, with customer data masked" width="100%">
+
+<sub>Three tool calls against the demo contact center, shown as tables by `npm run try`. The model receives the same data as JSON.</sub>
 
 ## What you can ask
 
@@ -61,26 +67,35 @@ Or from a clone:
 
 ```sh
 npm install
-npm run try                 # calls a few tools and prints the results
+npm run try                 # calls three tools and prints the results as tables
 npm run inspector           # opens the MCP Inspector against the demo
 ```
 
-Sample output of `get_queue_performance` for the demo chat queue:
+This is what the model receives from `get_queue_performance` for the demo Billing queue on a bad morning:
 
 ```json
 {
-  "queue": "Chat Support",
-  "offered": 165,
-  "answered": 150,
-  "abandoned": 15,
-  "abandonRatePercent": 9.1,
-  "serviceLevelPercent": 80.2,
-  "avgSpeedOfAnswerSeconds": 19,
-  "longestWaitSeconds": 508,
-  "avgHandleSeconds": 626,
-  "avgHoldSeconds": 74,
-  "avgAcwSeconds": 36,
-  "transferred": 8
+  "interval": "2026-10-20T05:00:00.000Z/2026-10-20T16:40:00.000Z",
+  "timeZone": "America/Bogota",
+  "serviceLevelTargetSeconds": 20,
+  "queues": [
+    {
+      "queue": "Billing",
+      "offered": 79,
+      "answered": 53,
+      "abandoned": 26,
+      "abandonRatePercent": 32.9,
+      "serviceLevelPercent": 49.3,
+      "avgSpeedOfAnswerSeconds": 28,
+      "longestWaitSeconds": 206,
+      "avgAbandonSeconds": 60,
+      "avgHandleSeconds": 335,
+      "avgTalkSeconds": 284,
+      "avgHoldSeconds": 56,
+      "avgAcwSeconds": 38,
+      "transferred": 0
+    }
+  ]
 }
 ```
 
@@ -126,10 +141,12 @@ Sample output of `get_queue_performance` for the demo chat queue:
 
 ## Safety
 
-- **Read-only by construction.** Every request goes through one check that allows `GET` and the four analytics query endpoints, and refuses anything else before it is sent. The OAuth role is the second layer.
-- **Customer data is masked by default.** Phone numbers keep the last four digits (`+1•••4567`), emails keep the first letter and domain, customer names become initials. Agent names are shown. Set `GENESYS_REDACT=false` only if the assistant is allowed to see full customer data.
-- **Credentials stay in the environment.** They are not logged or returned in tool results.
-- **Rate limits.** 429 and 5xx responses are retried with `Retry-After` or exponential backoff, up to three times.
+| Concern | Handling |
+| --- | --- |
+| The assistant changes something in the org | Every request goes through one check that allows `GET` and the four analytics query endpoints and refuses anything else before it is sent. The OAuth role, with view permissions only, is the second layer. |
+| Customer data reaches the model | Masked by default: phone numbers keep the last four digits (`+1•••4567`), emails keep the first letter and the domain, customer names become initials. Agent names are shown. `GENESYS_REDACT=false` turns it off. |
+| Credentials leak | They are read from the environment and are not logged or returned in tool results. |
+| Rate limits | 429 and 5xx responses are retried with `Retry-After` or exponential backoff, up to three times. An expired token is refreshed once. |
 
 ## Library
 
@@ -153,16 +170,23 @@ await server.connect(new StdioServerTransport());
 - Service level is reported as computed by Genesys Cloud for each queue; the 20 second target shown in results is the demo's setting.
 - Queue observations are per queue. An agent who is a member of several queues is counted in each.
 
+## Design decisions
+
+- [0001 · Read-only tools only](docs/adr/0001-read-only-tools.md)
+- [0002 · Demo org behind the same client interface](docs/adr/0002-demo-org-behind-the-same-interface.md)
+- [0003 · Shape results for the model, not the API](docs/adr/0003-shape-results-for-the-model.md)
+
 ## Development
 
-```sh
+```bash
 npm install
-npm test
-npm run try -- get_queue_status '{"queues":["Support"]}'
+npm test         # tools against the demo org, the read-only check, masking, and the server over stdio
+npm run try -- get_queue_status '{"queues":["Support"]}'   # one tool, raw JSON
+npm run demo:svg # re-renders docs/demo.svg from npm run try, with the clock pinned
 ```
-
-Design notes are in [docs/adr](docs/adr).
 
 ## License
 
-MIT
+MIT © [Oscar Benavides](https://ob0.dev)
+
+Not affiliated with or endorsed by Genesys. Genesys Cloud is a trademark of its owner.
