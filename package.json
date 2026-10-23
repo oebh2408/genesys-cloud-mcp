@@ -1,0 +1,61 @@
+{
+  "name": "genesys-cloud-mcp",
+  "version": "0.1.0",
+  "description": "Read-only MCP server for Genesys Cloud: queues, agents, conversations and analytics for AI assistants, with a built-in demo contact center.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "genesys",
+    "genesys-cloud",
+    "contact-center",
+    "analytics",
+    "ai",
+    "llm",
+    "claude"
+  ],
+  "author": "Oscar Benavides (https://ob0.dev)",
+  "license": "MIT",
+  "homepage": "https://github.com/oebh2408/genesys-cloud-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oebh2408/genesys-cloud-mcp.git"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "genesys-cloud-mcp": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "start": "node dist/cli.js",
+    "demo": "node dist/cli.js --demo",
+    "try": "npm run build && node scripts/try.mjs",
+    "inspector": "npx -y @modelcontextprotocol/inspector node dist/cli.js --demo",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}
